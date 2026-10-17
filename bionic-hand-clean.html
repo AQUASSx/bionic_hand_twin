@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <title>Bionic Hand</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-tap-highlight-color: transparent; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+
+    #video {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      object-fit: cover;
+      z-index: 1;
+      transform: scaleX(-1);
+    }
+
+    #canvas3d {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      z-index: 2;
+      pointer-events: none;
+    }
+
+    #startScreen {
+      position: absolute; inset: 0; z-index: 10;
+      background: rgba(6, 8, 12, 0.95);
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 18px;
+    }
+    #startBtn {
+      padding: 18px 44px;
+      font-size: 17px; font-weight: 700;
+      color: #fff;
+      background: #2563eb;
+      border: none;
+      border-radius: 50px;
+      cursor: pointer;
+      box-shadow: 0 10px 28px rgba(37, 99, 235, 0.45);
+      font-family: system-ui, sans-serif;
+    }
+    #startBtn:active { transform: scale(0.96); }
+    .hint {
+      color: #94a3b8;
+      font-size: 14px;
+      text-align: center;
+      max-width: 260px;
+      line-height: 1.4;
+      font-family: system-ui, sans-serif;
+    }
+  </style>
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+</head>
+<body>
+  <div id="startScreen">
+    <button id="startBtn">Включить камеру</button>
+    <div class="hint">Разрешите доступ к камере<br>и покажите руку</div>
+  </div>
+
+  <video id="video" playsinline muted autoplay></video>
+  <div id="canvas3d"></div>
+
+<script>
+// ============================================================
+// CLEAN BIONIC HAND — mobile optimized, no UI clutter
+// ============================================================
+
+const container = document.getElementById('canvas3d');
+const scene = new THREE.Scene();
+
+let W = window.innerWidth;
+let H = window.innerHeight;
+
+const camera = new THREE.OrthographicCamera(-W/2, W/2, H/2, -H/2, -3000, 3000);
+camera.position.z = 1200;
+
+const renderer = new THREE.WebGLRenderer({
+  antialias: true,
+  alpha: true,
+  powerPreference: 'high-performance'
+});
+renderer.setSize(W, H);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.3;
+container.appendChild(renderer.domElement);
+
+// Lighting
+scene.add(new THREE.HemisphereLight(0xf8fafc, 0x0a0e16, 1.5));
+
+const mainLight = new THREE.DirectionalLight(0xffffff, 3.2);
+mainLight.position.set(400, 700, 1000);
+scene.add(mainLight);
+
+const rimLight = new THREE.DirectionalLight(0x60a5fa, 2.2);
+rimLight.position.set(-700, 200, 500);
+scene.add(rimLight);
+
+const fillLight = new THREE.DirectionalLight(0x334155, 1.4);
+fillLight.position.set(0, -600, 400);
+scene.add(fillLight);
+
+const redPoint = new THREE.PointLight(0xef4444, 1.6, 1800);
+redPoint.position.set(0, 150, 350);
+scene.add(redPoint);
+
+// Materials
+const matCarbon   = new THREE.MeshStandardMaterial({ color: 0x1a1d24, roughness: 0.36, metalness: 0.74 });
+const matGunmetal = new THREE.MeshStandardMaterial({ color: 0x2a303c, roughness: 0.26, metalness: 0.88 });
+const matTitanium = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.12, metalness: 0.97 });
+const matCopper   = new THREE.MeshStandardMaterial({ color: 0xb45309, roughness: 0.20, metalness: 0.95 });
+const matDark     = new THREE.MeshStandardMaterial({ color: 0x0b0e13, roughness: 0.62, metalness: 0.45 });
+const matCeramic  = new THREE.MeshStandardMaterial({ color: 0xcbd5e1, roughness: 0.22, metalness: 0.26 });
+const matLed      = new THREE.MeshStandardMaterial({ color: 0xef4444, emissive: 0xdc2626, emissiveIntensity: 2.8, roughness: 0.16, metalness: 0.55 });
+const matBronze   = new THREE.MeshStandardMaterial({ color: 0xd97706, roughness: 0.18, metalness: 0.92 });
+
+// ============================================================
+// HAND MODEL
+// ============================================================
+const robotHand = new THREE.Group();
+robotHand.visible = false;
+scene.add(robotHand);
+
+function createScrew(r = 0.045) {
+  const g = new THREE.Group();
+  const sock = new THREE.Mesh(new THREE.CylinderGeometry(r*1.3, r*1.3, 0.026, 12), matDark);
+  const head = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 0.046, 6), matTitanium);
+  g.add(sock, head);
+  g.rotation.x = Math.PI / 2;
+  return g;
+}
+
+// Palm
+const palm = new THREE.Group();
+robotHand.add(palm);
+
+palm.add(new THREE.Mesh(new THREE.BoxGeometry(0.96, 0.94, 0.46), matDark));
+
+const upperPalm = new THREE.Mesh(new THREE.BoxGeometry(1.02, 0.48, 0.52), matCarbon);
+upperPalm.position.set(0, 0.26, 0.05);
+palm.add(upperPalm);
+
+const bridge = new THREE.Mesh(new THREE.BoxGeometry(0.60, 0.52, 0.50), matGunmetal);
+bridge.position.set(0.02, -0.07, 0.04);
+palm.add(bridge);
+
+const bezel = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.18, 0.09, 24), matTitanium);
+bezel.rotation.x = Math.PI / 2;
+bezel.position.set(0.02, 0.03, 0.28);
+palm.add(bezel);
+
+const coreGlow = new THREE.Mesh(new THREE.CylinderGeometry(0.095, 0.095, 0.11, 20), matLed);
+coreGlow.rotation.x = Math.PI / 2;
+coreGlow.position.set(0.02, 0.03, 0.285);
+coreGlow.userData.isLed = true;
+palm.add(coreGlow);
+
+const thenar = new THREE.Mesh(new THREE.SphereGeometry(0.40, 24, 20), matCarbon);
+thenar.scale.set(0.94, 1.42, 0.86);
+thenar.position.set(-0.36, -0.17, 0.09);
+thenar.rotation.z = -0.36;
+palm.add(thenar);
+
+const hypothenar = new THREE.Mesh(new THREE.CylinderGeometry(0.23, 0.27, 0.78, 20), matCarbon);
+hypothenar.scale.set(1, 1, 1.2);
+hypothenar.position.set(0.41, -0.09, 0.07);
+hypothenar.rotation.z = 0.13;
+palm.add(hypothenar);
+
+// Forearm
+const forearm = new THREE.Group();
+robotHand.add(forearm);
+
+const wristCore = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.47, 0.46, 24), matDark);
+wristCore.rotation.z = Math.PI / 2;
+forearm.add(wristCore);
+
+const wristCap = new THREE.Mesh(new THREE.CylinderGeometry(0.29, 0.29, 1.05, 24), matTitanium);
+wristCap.rotation.z = Math.PI / 2;
+forearm.add(wristCap);
+
+const forearmCore = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.54, 1.85, 28), matDark);
+forearmCore.position.y = -1.08;
+forearm.add(forearmCore);
+
+const gauntlet = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.50, 0.58, 1.65, 24, 1, false, -Math.PI*0.42, Math.PI*0.84),
+  matCarbon
+);
+gauntlet.position.set(0, -1.08, 0.05);
+forearm.add(gauntlet);
+
+const sideL = new THREE.Mesh(new THREE.BoxGeometry(0.19, 1.55, 0.72), matCeramic);
+sideL.position.set(-0.48, -1.08, 0);
+sideL.rotation.z = -0.05;
+forearm.add(sideL);
+
+const sideR = new THREE.Mesh(new THREE.BoxGeometry(0.19, 1.55, 0.72), matCeramic);
+sideR.position.set(0.48, -1.08, 0);
+sideR.rotation.z = 0.05;
+forearm.add(sideR);
+
+// Copper tubes
+for (let i = 0; i < 5; i++) {
+  const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 1.4, 10), matCopper);
+  tube.position.set(-0.28 + i * 0.14, -1.15, 0.22);
+  tube.rotation.x = 0.08;
+  forearm.add(tube);
+}
+
+// Phalanges
+const BONE_PAIRS = [
+  [1,2,'thumb',0], [2,3,'thumb',1], [3,4,'thumb',2],
+  [5,6,'index',0], [6,7,'index',1], [7,8,'index',2],
+  [9,10,'middle',0], [10,11,'middle',1], [11,12,'middle',2],
+  [13,14,'ring',0], [14,15,'ring',1], [15,16,'ring',2],
+  [17,18,'pinky',0], [18,19,'pinky',1], [19,20,'pinky',2]
+];
+
+function createPhalanx(segIdx, isThumb) {
+  const g = new THREE.Group();
+  const distal = segIdx === 2;
+  const w = isThumb ? 1.16 : 1.0;
+
+  g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.255*w, 0.295*w, 0.96, 18), matDark));
+
+  // Copper pistons
+  [-0.24*w, 0.24*w].forEach(rx => {
+    const p = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.88, 12), matCopper);
+    p.position.set(rx, 0, -0.04);
+    p.userData.isPiston = true;
+    g.add(p);
+  });
+
+  if (!distal) {
+    const shell = new THREE.Mesh(new THREE.CylinderGeometry(0.35*w, 0.38*w, 0.82, 18), matCarbon);
+    shell.scale.set(1.05, 1, 0.93);
+    shell.position.z = 0.05;
+    g.add(shell);
+
+    const plate = new THREE.Mesh(new THREE.BoxGeometry(0.50*w, 0.78, 0.34), matGunmetal);
+    plate.position.z = 0.15;
+    g.add(plate);
+
+    const sc1 = createScrew(0.055); sc1.position.set(0, 0.21, 0.33); g.add(sc1);
+    const sc2 = createScrew(0.055); sc2.position.set(0, -0.21, 0.33); g.add(sc2);
+
+    const led = new THREE.Mesh(new THREE.BoxGeometry(0.42*w, 0.036, 0.05), matLed);
+    led.position.set(0, 0, 0.28);
+    led.userData.isLed = true;
+    g.add(led);
+
+    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.54*w, 0.70, 0.28), matDark);
+    grip.position.z = -0.14;
+    g.add(grip);
+  } else {
+    const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.32*w, 0.35*w, 0.46, 18), matCarbon);
+    collar.position.y = -0.19;
+    g.add(collar);
+
+    const tip = new THREE.Mesh(new THREE.SphereGeometry(0.30*w, 20, 18), matDark);
+    tip.scale.set(0.95, 1.48, 0.93);
+    tip.position.y = 0.23;
+    g.add(tip);
+
+    const nail = new THREE.Mesh(new THREE.SphereGeometry(0.29*w, 16, 14), matGunmetal);
+    nail.scale.set(0.87, 1.35, 0.56);
+    nail.position.set(0, 0.21, 0.11);
+    g.add(nail);
+  }
+  return g;
+}
+
+const phalanxMeshes = BONE_PAIRS.map(([, , name, seg]) => {
+  const m = createPhalanx(seg, name === 'thumb');
+  robotHand.add(m);
+  return m;
+});
+
+// Joints
+const KNUCKLE = new Set([1, 2, 5, 9, 13, 17]);
+const TIP = new Set([4, 8, 12, 16, 20]);
+const jointMeshes = [];
+
+for (let i = 0; i < 21; i++) {
+  const j = new THREE.Group();
+  if (KNUCKLE.has(i)) {
+    const drum = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.36, 0.62, 20), matBronze);
+    drum.rotation.z = Math.PI / 2;
+    j.add(drum);
+    const pin = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.74, 14), matTitanium);
+    pin.rotation.z = Math.PI / 2;
+    j.add(pin);
+  } else if (!TIP.has(i) && i !== 0) {
+    j.add(new THREE.Mesh(new THREE.SphereGeometry(0.31, 16, 16), matDark));
+    const pin = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.62, 12), matTitanium);
+    pin.rotation.z = Math.PI / 2;
+    j.add(pin);
+  }
+  robotHand.add(j);
+  jointMeshes.push(j);
+}
+
+// ============================================================
+// TRACKING
+// ============================================================
+const smoothed = Array.from({ length: 21 }, () => new THREE.Vector3());
+const smoothedQ = Array.from({ length: BONE_PAIRS.length }, () => new THREE.Quaternion());
+const palmPos = new THREE.Vector3();
+const palmQuat = new THREE.Quaternion();
+let hasTrack = false;
+let appear = 0;
+
+function orientBone(mesh, a, b, scale, normal, idx) {
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const len = dir.length();
+  if (len < 0.001) return;
+
+  mesh.position.lerp(a.clone().addScaledVector(dir, 0.5), 0.75);
+
+  const y = dir.normalize();
+  let x = new THREE.Vector3().crossVectors(y, normal).normalize();
+  if (x.lengthSq() < 1e-4) x.set(1, 0, 0);
+  const z = new THREE.Vector3().crossVectors(x, y).normalize();
+
+  const q = new THREE.Quaternion().setFromRotationMatrix(
+    new THREE.Matrix4().makeBasis(x, y, z)
+  );
+
+  if (!hasTrack) smoothedQ[idx].copy(q);
+  else smoothedQ[idx].slerp(q, 0.65);
+
+  mesh.quaternion.copy(smoothedQ[idx]);
+  mesh.scale.set(scale, len, scale);
+
+  // Pistons react to flexion
+  mesh.children.forEach(ch => {
+    if (ch.userData.isPiston) {
+      const flex = Math.min(1, Math.max(0, 1.1 - len / (scale * 1.1)));
+      ch.scale.y = 0.55 + flex * 0.7;
+      ch.position.y = flex * 0.12;
+    }
+  });
+}
+
+function updateHand(landmarks) {
+  const vw = video.videoWidth || 640;
+  const vh = video.videoHeight || 480;
+  const cover = Math.max(W / vw, H / vh);
+  const dw = vw * cover;
+  const dh = vh * cover;
+
+  for (let i = 0; i < 21; i++) {
+    const lm = landmarks[i];
+    // Mirrored because front camera
+    const u = 1.0 - lm.x;
+    const target = new THREE.Vector3(
+      (u - 0.5) * dw,
+      -(lm.y - 0.5) * dh,
+      -lm.z * dw * 1.1
+    );
+    if (!hasTrack) smoothed[i].copy(target);
+    else smoothed[i].lerp(target, 0.68);
+  }
+
+  const palmW = smoothed[5].distanceTo(smoothed[17]);
+  const palmL = smoothed[0].distanceTo(smoothed[9]);
+  const unit = Math.max(palmW * 0.42, 12);
+
+  const vUp = new THREE.Vector3().subVectors(smoothed[9], smoothed[0]).normalize();
+  const vAcross = new THREE.Vector3().subVectors(smoothed[17], smoothed[5]).normalize();
+  let vN = new THREE.Vector3().crossVectors(vAcross, vUp).normalize();
+  if (vN.z < 0) vN.negate();
+  const vR = new THREE.Vector3().crossVectors(vUp, vN).normalize();
+
+  const basis = new THREE.Matrix4().makeBasis(vR, vUp, vN);
+  const targetQ = new THREE.Quaternion().setFromRotationMatrix(basis);
+
+  const center = new THREE.Vector3()
+    .add(smoothed[0]).add(smoothed[5]).add(smoothed[9])
+    .add(smoothed[13]).add(smoothed[17]).multiplyScalar(0.2);
+
+  if (!hasTrack) {
+    palmPos.copy(center);
+    palmQuat.copy(targetQ);
+  } else {
+    palmPos.lerp(center, 0.68);
+    palmQuat.slerp(targetQ, 0.62);
+  }
+
+  palm.position.copy(palmPos);
+  palm.quaternion.copy(palmQuat);
+  palm.scale.set(palmW * 1.25, palmL * 1.03, unit * 1.35);
+
+  forearm.position.copy(smoothed[0]);
+  forearm.quaternion.copy(palmQuat);
+  forearm.scale.setScalar(unit * 1.22);
+
+  BONE_PAIRS.forEach(([a, b, name, seg], idx) => {
+    const f = name === 'pinky' ? 0.86 : (name === 'thumb' ? 1.08 : 1.0);
+    const taper = 1.0 - seg * 0.07;
+    orientBone(phalanxMeshes[idx], smoothed[a], smoothed[b], unit * f * taper, vN, idx);
+  });
+
+  for (let i = 0; i < 21; i++) {
+    jointMeshes[i].position.copy(smoothed[i]);
+    jointMeshes[i].quaternion.copy(palmQuat);
+    jointMeshes[i].scale.setScalar(unit * 0.92);
+  }
+
+  hasTrack = true;
+  robotHand.visible = true;
+  appear += (1 - appear) * 0.12;
+  robotHand.scale.setScalar(appear);
+}
+
+function hideHand() {
+  appear += (0 - appear) * 0.15;
+  robotHand.scale.setScalar(appear);
+  if (appear < 0.03) {
+    robotHand.visible = false;
+    hasTrack = false;
+  }
+}
+
+// ============================================================
+// CAMERA + MEDIAPIPE
+// ============================================================
+const video = document.getElementById('video');
+const startScreen = document.getElementById('startScreen');
+let running = false;
+
+const hands = new Hands({
+  locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+
+hands.setOptions({
+  maxNumHands: 1,
+  modelComplexity: 1,
+  minDetectionConfidence: 0.55,
+  minTrackingConfidence: 0.55
+});
+
+hands.onResults((results) => {
+  if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+    updateHand(results.multiHandLandmarks[0]);
+  } else {
+    hideHand();
+  }
+});
+
+async function startCamera() {
+  try {
+    // Prefer user (front) camera
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: 'user',
+        width:  { ideal: 1280, min: 640 },
+        height: { ideal: 720,  min: 480 }
+      },
+      audio: false
+    });
+
+    video.srcObject = stream;
+    video.setAttribute('playsinline', true);
+    video.muted = true;
+
+    await video.play();
+
+    startScreen.style.display = 'none';
+
+    if (!running) {
+      running = true;
+      requestAnimationFrame(loop);
+    }
+  } catch (err) {
+    console.error(err);
+    startScreen.querySelector('.hint').textContent =
+      'Не удалось открыть камеру.\nПроверьте разрешения.';
+  }
+}
+
+let lastPulse = 0;
+async function loop(now) {
+  if (video.readyState >= 2) {
+    try {
+      await hands.send({ image: video });
+    } catch (e) {}
+  }
+
+  // Subtle LED pulse
+  const t = now * 0.001;
+  const pulse = 2.3 + Math.sin(t * 2.8) * 0.9;
+  robotHand.traverse(obj => {
+    if (obj.userData.isLed && obj.material) {
+      obj.material.emissiveIntensity = pulse;
+    }
+  });
+  redPoint.intensity = 1.4 + Math.sin(t * 2.2) * 0.5;
+
+  renderer.render(scene, camera);
+  requestAnimationFrame(loop);
+}
+
+document.getElementById('startBtn').addEventListener('click', startCamera);
+
+window.addEventListener('resize', () => {
+  W = window.innerWidth;
+  H = window.innerHeight;
+  camera.left = -W/2;
+  camera.right = W/2;
+  camera.top = H/2;
+  camera.bottom = -H/2;
+  camera.updateProjectionMatrix();
+  renderer.setSize(W, H);
+});
+
+// Auto try on load (some browsers allow it)
+// startCamera();
+</script>
+</body>
+</html>
