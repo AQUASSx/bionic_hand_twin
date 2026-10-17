@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Bionic Robot Hand — v4 Stable</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0;user-select:none;-webkit-tap-highlight-color:transparent}
+    body,html{width:100%;height:100%;overflow:hidden;background:#000;font-family:'Segoe UI',system-ui,sans-serif}
+    #video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:1;transform:scaleX(-1)}
+    #canvas3d{position:absolute;inset:0;width:100%;height:100%;z-index:2;pointer-events:none}
+
+    #hud{position:absolute;top:0;left:0;right:0;z-index:20;pointer-events:none;padding:11px 13px;
+      display:flex;justify-content:space-between;align-items:flex-start;
+      background:linear-gradient(to bottom,rgba(0,0,0,.58),transparent)}
+    .hud-block{background:rgba(8,12,20,.82);border:1px solid rgba(255,255,255,.12);border-radius:11px;
+      padding:8px 12px;backdrop-filter:blur(14px);color:#e2e8f0;font-size:11px;line-height:1.45;min-width:124px}
+    .hud-title{font-weight:700;color:#64748b;font-size:9px;letter-spacing:.8px;text-transform:uppercase;margin-bottom:3px}
+    .hud-value{font-size:13px;font-weight:600}
+    .green{color:#4ade80}.yellow{color:#facc15}.red{color:#f87171}.cyan{color:#22d3ee}.orange{color:#fb923c}.purple{color:#c084fc}
+
+    #controls{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);z-index:20;
+      display:flex;gap:7px;pointer-events:auto;background:rgba(8,12,20,.82);
+      border:1px solid rgba(255,255,255,.13);border-radius:50px;padding:6px 10px;backdrop-filter:blur(16px)}
+    .ctrl-btn{width:42px;height:42px;border-radius:50%;background:rgba(25,35,52,.8);
+      border:1px solid rgba(255,255,255,.15);color:#e2e8f0;font-size:16px;
+      display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .15s}
+    .ctrl-btn:hover{background:rgba(45,65,100,.9);transform:scale(1.06)}
+    .ctrl-btn:active{transform:scale(.9)}
+    .ctrl-btn.active{background:#2563eb;border-color:#3b82f6;box-shadow:0 0 12px rgba(37,99,235,.45)}
+
+    #camFlip{position:absolute;top:12px;right:12px;z-index:25;width:40px;height:40px;border-radius:50%;
+      background:rgba(15,20,28,.55);border:1px solid rgba(255,255,255,.2);color:rgba(255,255,255,.9);
+      font-size:18px;display:flex;align-items:center;justify-content:center;cursor:pointer;backdrop-filter:blur(8px)}
+    #camFlip:active{transform:scale(.88)}
+
+    #startScreen{position:absolute;inset:0;z-index:30;background:rgba(4,6,10,.97);
+      display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px}
+    #startBtn{padding:16px 38px;font-size:15px;font-weight:700;color:#fff;
+      background:linear-gradient(135deg,#2563eb,#1d4ed8);border:1px solid rgba(255,255,255,.2);
+      border-radius:50px;cursor:pointer;box-shadow:0 10px 30px rgba(37,99,235,.4);transition:all .2s}
+    #startBtn:hover{transform:translateY(-2px)}
+    .status-text{color:#94a3b8;font-size:12px;text-align:center;max-width:300px;line-height:1.45}
+
+    #toast{position:absolute;bottom:78px;left:50%;transform:translateX(-50%) translateY(16px);
+      background:rgba(10,14,22,.93);color:#e2e8f0;padding:8px 16px;border-radius:9px;font-size:12px;
+      opacity:0;transition:all .25s;pointer-events:none;z-index:40;border:1px solid rgba(255,255,255,.1)}
+    #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+    #themeBar{position:absolute;top:64px;right:12px;z-index:22;display:none;flex-direction:column;gap:5px}
+    .theme-dot{width:20px;height:20px;border-radius:50%;border:2px solid rgba(255,255,255,.25);
+      cursor:pointer;transition:transform .12s}
+    .theme-dot:hover{transform:scale(1.18)}
+    .theme-dot.active{border-color:#fff;box-shadow:0 0 8px rgba(255,255,255,.35)}
+  </style>
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+</head>
+<body>
+  <div id="startScreen">
+    <button id="startBtn">Включить камеру</button>
+    <div class="status-text">v4 Stable • баги исправлены • поршни • тросы<br>4 темы • частицы • жесты • запись/воспроизведение</div>
+  </div>
+
+  <div id="hud" style="display:none">
+    <div class="hud-block">
+      <div class="hud-title">Система</div>
+      <div>FPS <span id="fpsVal" class="hud-value cyan">—</span></div>
+      <div>Увер. <span id="confVal" class="hud-value">—</span></div>
+      <div>Рук <span id="handsVal" class="hud-value">0</span></div>
+      <div>Нагр. <span id="loadVal" class="hud-value orange">0%</span></div>
+    </div>
+    <div class="hud-block" style="text-align:right">
+      <div class="hud-title">Жест / Режим</div>
+      <div id="gestureVal" class="hud-value cyan" style="font-size:14px">—</div>
+      <div style="margin-top:2px;font-size:10px;color:#64748b" id="modeLabel">Full • Cyber</div>
+      <div style="margin-top:1px;font-size:10px;color:#64748b" id="tempVal">T° 36.2</div>
+    </div>
+  </div>
+
+  <div id="themeBar">
+    <div class="theme-dot active" data-theme="0" style="background:#1a1d24" title="Cyber"></div>
+    <div class="theme-dot" data-theme="1" style="background:#1e3a2f" title="Military"></div>
+    <div class="theme-dot" data-theme="2" style="background:#1e293b" title="Medical"></div>
+    <div class="theme-dot" data-theme="3" style="background:#3b2f1e" title="Steampunk"></div>
+  </div>
+
+  <button id="camFlip" title="Камера">⟳</button>
+
+  <div id="controls" style="display:none">
+    <button class="ctrl-btn" id="btnFreeze" title="Заморозка">❄</button>
+    <button class="ctrl-btn" id="btnShot" title="Скрин">📷</button>
+    <button class="ctrl-btn" id="btnMode" title="Режим">👁</button>
+    <button class="ctrl-btn" id="btnRec" title="Запись/Play">⏺</button>
+    <button class="ctrl-btn" id="btnSound" title="Звук">🔊</button>
+    <button class="ctrl-btn active" id="btnHud" title="HUD">📊</button>
+  </div>
+
+  <div id="toast"></div>
+  <video id="video" playsinline muted></video>
+  <div id="canvas3d"></div>
+
+<script>
+/* =========================================================
+   BIONIC ROBOT HAND v4 — bugfixed + improved
+   ========================================================= */
+
+const S = {
+  frozen: false, soundOn: true, hudOn: true,
+  mode: 0, modes: ['Full', 'X-Ray', 'Skeleton'],
+  theme: 0, themes: ['Cyber', 'Military', 'Medical', 'Steampunk'],
+  recording: false, playing: false, recorded: null, playT: 0,
+  lastAngles: [0,0,0,0,0], load: 0, temp: 36.2,
+  audioCtx: null
+};
+
+function toast(msg, ms = 1500) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(t._tm);
+  t._tm = setTimeout(() => t.classList.remove('show'), ms);
+}
+
+/* ---------- Themes ---------- */
+const THEMES = [
+  { carbon:0x1a1d24, gun:0x2a303c, titan:0xe2e8f0, copper:0xb45309, dark:0x0b0e13, ceramic:0xcbd5e1, led:0xef4444, ledE:0xdc2626, bronze:0xd97706 },
+  { carbon:0x1e2a1e, gun:0x2d3b2d, titan:0xc5d0c5, copper:0x8b6914, dark:0x0c120c, ceramic:0xa8b5a0, led:0x22c55e, ledE:0x16a34a, bronze:0xa16207 },
+  { carbon:0x1e293b, gun:0x334155, titan:0xf1f5f9, copper:0x64748b, dark:0x0f172a, ceramic:0xe2e8f0, led:0x3b82f6, ledE:0x2563eb, bronze:0x64748b },
+  { carbon:0x2a1f14, gun:0x3d2e1e, titan:0xd4a574, copper:0xb45309, dark:0x1a120a, ceramic:0xc4a882, led:0xf59e0b, ledE:0xd97706, bronze:0xd97706 }
+];
+
+function createMaterials(t) {
+  return {
+    carbon:  new THREE.MeshStandardMaterial({ color: t.carbon,  roughness: 0.34, metalness: 0.75 }),
+    gun:     new THREE.MeshStandardMaterial({ color: t.gun,     roughness: 0.24, metalness: 0.90 }),
+    titan:   new THREE.MeshStandardMaterial({ color: t.titan,   roughness: 0.10, metalness: 0.98 }),
+    copper:  new THREE.MeshStandardMaterial({ color: t.copper,  roughness: 0.18, metalness: 0.96 }),
+    dark:    new THREE.MeshStandardMaterial({ color: t.dark,    roughness: 0.60, metalness: 0.48 }),
+    ceramic: new THREE.MeshStandardMaterial({ color: t.ceramic, roughness: 0.20, metalness: 0.28 }),
+    led:     new THREE.MeshStandardMaterial({ color: t.led, emissive: t.ledE, emissiveIntensity: 2.6, roughness: 0.15, metalness: 0.55 }),
+    bronze:  new THREE.MeshStandardMaterial({ color: t.bronze,  roughness: 0.17, metalness: 0.93 }),
+    tendon:  new THREE.MeshStandardMaterial({ color: 0x94a3b8,  roughness: 0.40, metalness: 0.70 }),
+    xray:    new THREE.MeshStandardMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.25, roughness: 0.3, metalness: 0.5, side: THREE.DoubleSide }),
+    skel:    new THREE.MeshBasicMaterial({ color: 0x22d3ee, wireframe: true })
+  };
+}
+
+let MATS = createMaterials(THEMES[0]);
+
+/* ---------- Scene ---------- */
+const container = document.getElementById('canvas3d');
+const scene = new THREE.Scene();
+let W = innerWidth, H = innerHeight;
+const camera = new THREE.OrthographicCamera(-W/2, W/2, H/2, -H/2, -3000, 3000);
+camera.position.z = 1200;
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance', preserveDrawingBuffer: true });
+renderer.setSize(W, H);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.28;
+container.appendChild(renderer.domElement);
+
+scene.add(new THREE.HemisphereLight(0xf1f5f9, 0x0a0e16, 1.4));
+const mainL = new THREE.DirectionalLight(0xffffff, 3.3); mainL.position.set(480, 780, 1150); scene.add(mainL);
+const rimL  = new THREE.DirectionalLight(0x93c5fd, 2.4); rimL.position.set(-850, 160, 620); scene.add(rimL);
+const fillL = new THREE.DirectionalLight(0x1e293b, 1.3); fillL.position.set(0, -700, 480); scene.add(fillL);
+const ledPoint = new THREE.PointLight(0xef4444, 1.9, 2000); ledPoint.position.set(0, 180, 380); scene.add(ledPoint);
+
+/* Particles */
+const P_COUNT = 64;
+const pPos = new Float32Array(P_COUNT * 3);
+const pLife = new Float32Array(P_COUNT).fill(-1);
+const pGeo = new THREE.BufferGeometry();
+pGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
+const pMat = new THREE.PointsMaterial({ color: 0xff6b35, size: 3.5, transparent: true, opacity: 0.8, depthWrite: false });
+const particles = new THREE.Points(pGeo, pMat);
+scene.add(particles);
+
+function spawnParticles(origin, n = 10) {
+  let s = 0;
+  for (let i = 0; i < P_COUNT && s < n; i++) {
+    if (pLife[i] < 0) {
+      pPos[i*3]   = origin.x + (Math.random() - 0.5) * 28;
+      pPos[i*3+1] = origin.y + (Math.random() - 0.5) * 28;
+      pPos[i*3+2] = origin.z + (Math.random() - 0.5) * 18;
+      pLife[i] = 0.35 + Math.random() * 0.45;
+      s++;
+    }
+  }
+  pGeo.attributes.position.needsUpdate = true;
+}
+
+function updateParticles(dt) {
+  for (let i = 0; i < P_COUNT; i++) {
+    if (pLife[i] > 0) {
+      pLife[i] -= dt;
+      pPos[i*3+1] += 35 * dt;
+      pPos[i*3]   += (Math.random() - 0.5) * 18 * dt;
+      if (pLife[i] <= 0) { pLife[i] = -1; pPos[i*3+1] = -9999; }
+    }
+  }
+  pGeo.attributes.position.needsUpdate = true;
+}
+
+/* ---------- Hand Factory ---------- */
+function createScrew(r = 0.045) {
+  const g = new THREE.Group();
+  const sock = new THREE.Mesh(new THREE.CylinderGeometry(r * 1.35, r * 1.35, 0.028, 12), MATS.dark);
+  const head = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 0.048, 6), MATS.titan);
+  g.add(sock, head);
+  g.rotation.x = Math.PI / 2;
+  g.userData.matSlots = [sock, head]; // for theme update
+  return g;
+}
+
+function createHand() {
+  const root = new THREE.Group();
+  root.visible = false;
+
+  // Palm
+  const palm = new THREE.Group();
+  root.add(palm);
+
+  const parts = []; // collect all meshes for theme/mode
+
+  function addMesh(geo, mat, parent, pos, rot, scl) {
+    const m = new THREE.Mesh(geo, mat);
+    if (pos) m.position.set(pos[0], pos[1], pos[2]);
+    if (rot) m.rotation.set(rot[0], rot[1], rot[2]);
+    if (scl) m.scale.set(scl[0], scl[1], scl[2]);
+    m.userData.matType = Object.keys(MATS).find(k => MATS[k] === mat) || 'dark';
+    parent.add(m);
+    parts.push(m);
+    return m;
+  }
+
+  addMesh(new THREE.BoxGeometry(0.96, 0.94, 0.46), MATS.dark, palm);
+  addMesh(new THREE.BoxGeometry(1.02, 0.48, 0.52), MATS.carbon, palm, [0, 0.26, 0.05]);
+  addMesh(new THREE.BoxGeometry(0.60, 0.52, 0.50), MATS.gun, palm, [0.02, -0.07, 0.04]);
+  addMesh(new THREE.CylinderGeometry(0.16, 0.18, 0.09, 22), MATS.titan, palm, [0.02, 0.03, 0.28], [Math.PI/2, 0, 0]);
+  const coreLed = addMesh(new THREE.CylinderGeometry(0.095, 0.095, 0.11, 18), MATS.led, palm, [0.02, 0.03, 0.285], [Math.PI/2, 0, 0]);
+  coreLed.userData.isLed = true;
+  addMesh(new THREE.SphereGeometry(0.40, 22, 18), MATS.carbon, palm, [-0.36, -0.17, 0.09], [0, 0, -0.36], [0.94, 1.42, 0.86]);
+  addMesh(new THREE.CylinderGeometry(0.23, 0.27, 0.78, 18), MATS.carbon, palm, [0.41, -0.09, 0.07], [0, 0, 0.13], [1, 1, 1.2]);
+
+  // Forearm
+  const forearm = new THREE.Group();
+  root.add(forearm);
+  addMesh(new THREE.CylinderGeometry(0.45, 0.47, 0.46, 22), MATS.dark, forearm, null, [0, 0, Math.PI/2]);
+  addMesh(new THREE.CylinderGeometry(0.29, 0.29, 1.05, 22), MATS.titan, forearm, null, [0, 0, Math.PI/2]);
+  addMesh(new THREE.CylinderGeometry(0.45, 0.54, 1.85, 26), MATS.dark, forearm, [0, -1.08, 0]);
+  addMesh(new THREE.CylinderGeometry(0.50, 0.58, 1.65, 22, 1, false, -Math.PI*0.42, Math.PI*0.84), MATS.carbon, forearm, [0, -1.08, 0.05]);
+  addMesh(new THREE.BoxGeometry(0.19, 1.55, 0.72), MATS.ceramic, forearm, [-0.48, -1.08, 0], [0, 0, -0.05]);
+  addMesh(new THREE.BoxGeometry(0.19, 1.55, 0.72), MATS.ceramic, forearm, [0.48, -1.08, 0], [0, 0, 0.05]);
+  for (let i = 0; i < 5; i++) {
+    addMesh(new THREE.CylinderGeometry(0.035, 0.035, 1.4, 8), MATS.copper, forearm, [-0.28 + i*0.14, -1.15, 0.22], [0.08, 0, 0]);
+  }
+
+  // Phalanges
+  const PAIRS = [
+    [1,2,'thumb',0],[2,3,'thumb',1],[3,4,'thumb',2],
+    [5,6,'index',0],[6,7,'index',1],[7,8,'index',2],
+    [9,10,'middle',0],[10,11,'middle',1],[11,12,'middle',2],
+    [13,14,'ring',0],[14,15,'ring',1],[15,16,'ring',2],
+    [17,18,'pinky',0],[18,19,'pinky',1],[19,20,'pinky',2]
+  ];
+
+  function makePhalanx(seg, isThumb) {
+    const g = new THREE.Group();
+    const distal = seg === 2;
+    const w = isThumb ? 1.16 : 1.0;
+
+    addMesh(new THREE.CylinderGeometry(0.255*w, 0.295*w, 0.96, 18), MATS.dark, g);
+
+    // Dynamic pistons
+    const pistons = [];
+    [-0.24*w, 0.24*w].forEach(rx => {
+      const p = addMesh(new THREE.CylinderGeometry(0.055, 0.055, 0.7, 10), MATS.copper, g, [rx, 0, -0.04]);
+      p.userData.isPiston = true;
+      pistons.push(p);
+    });
+    g.userData.pistons = pistons;
+
+    if (!distal) {
+      addMesh(new THREE.CylinderGeometry(0.35*w, 0.38*w, 0.82, 18), MATS.carbon, g, [0, 0, 0.055], null, [1.06, 1, 0.93]);
+      addMesh(new THREE.BoxGeometry(0.50*w, 0.78, 0.34), MATS.gun, g, [0, 0, 0.15]);
+      const sc1 = createScrew(0.055); sc1.position.set(0, 0.21, 0.34); g.add(sc1);
+      const sc2 = createScrew(0.055); sc2.position.set(0, -0.21, 0.34); g.add(sc2);
+      parts.push(...sc1.userData.matSlots, ...sc2.userData.matSlots);
+
+      const led = addMesh(new THREE.BoxGeometry(0.42*w, 0.038, 0.055), MATS.led, g, [0, 0, 0.28]);
+      led.userData.isLed = true;
+
+      addMesh(new THREE.BoxGeometry(0.54*w, 0.70, 0.30), MATS.dark, g, [0, 0, -0.15]);
+    } else {
+      addMesh(new THREE.CylinderGeometry(0.32*w, 0.35*w, 0.46, 18), MATS.carbon, g, [0, -0.19, 0]);
+      addMesh(new THREE.SphereGeometry(0.30*w, 20, 18), MATS.dark, g, [0, 0.23, 0], null, [0.95, 1.48, 0.93]);
+      addMesh(new THREE.SphereGeometry(0.29*w, 16, 14), MATS.gun, g, [0, 0.21, 0.11], null, [0.87, 1.35, 0.56]);
+    }
+    return g;
+  }
+
+  const phalanges = PAIRS.map(([, , name, seg]) => {
+    const m = makePhalanx(seg, name === 'thumb');
+    root.add(m);
+    return m;
+  });
+
+  // Tendons
+  const tendons = [];
+  for (let f = 0; f < 5; f++) {
+    const t = addMesh(new THREE.CylinderGeometry(0.016, 0.016, 1, 6), MATS.tendon, root);
+    tendons.push(t);
+  }
+
+  // Joints
+  const KNUCKLE = new Set([1, 2, 5, 9, 13, 17]);
+  const TIP = new Set([4, 8, 12, 16, 20]);
+  const joints = [];
+  for (let i = 0; i < 21; i++) {
+    const j = new THREE.Group();
+    if (KNUCKLE.has(i)) {
+      addMesh(new THREE.CylinderGeometry(0.36, 0.36, 0.62, 20), MATS.bronze, j, null, [0, 0, Math.PI/2]);
+      addMesh(new THREE.CylinderGeometry(0.165, 0.165, 0.76, 14), MATS.titan, j, null, [0, 0, Math.PI/2]);
+    } else if (!TIP.has(i) && i !== 0) {
+      addMesh(new THREE.SphereGeometry(0.32, 16, 16), MATS.dark, j);
+      addMesh(new THREE.CylinderGeometry(0.145, 0.145, 0.64, 12), MATS.titan, j, null, [0, 0, Math.PI/2]);
+    }
+    root.add(j);
+    joints.push(j);
+  }
+
+  root.userData = {
+    palm, forearm, phalanges, joints, tendons, PAIRS, parts,
+    pts: Array.from({ length: 21 }, () => new THREE.Vector3()),
+    quats: Array.from({ length: PAIRS.length }, () => new THREE.Quaternion()),
+    palmPos: new THREE.Vector3(), palmQuat: new THREE.Quaternion(),
+    has: false, appear: 0
+  };
+  return root;
+}
+
+const handL = createHand();
+const handR = createHand();
+scene.add(handL);
+scene.add(handR);
+
+/* ---------- Theme / Mode apply ---------- */
+function applyMaterials(root) {
+  const ud = root.userData;
+  if (!ud.parts) return;
+  ud.parts.forEach(m => {
+    const type = m.userData.matType || 'dark';
+    if (S.mode === 0) {
+      m.material = MATS[type] || MATS.dark;
+      m.material.transparent = false;
+      m.material.opacity = 1;
+      m.material.wireframe = false;
+    } else if (S.mode === 1) {
+      m.material = MATS.xray;
+    } else {
+      m.material = MATS.skel;
+    }
+  });
+}
+
+function setTheme(idx) {
+  S.theme = idx;
+  MATS = createMaterials(THEMES[idx]);
+  applyMaterials(handL);
+  applyMaterials(handR);
+  document.querySelectorAll('.theme-dot').forEach((d, i) => d.classList.toggle('active', i === idx));
+  document.getElementById('modeLabel').textContent = S.modes[S.mode] + ' • ' + S.themes[idx];
+  // Update LED point color
+  const c = new THREE.Color(THEMES[idx].led);
+  ledPoint.color.copy(c);
+  toast('Тема: ' + S.themes[idx]);
+}
+
+/* ---------- Kinematics ---------- */
+function orient(mesh, a, b, scale, normal, idx, ud) {
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const len = dir.length();
+  if (len < 1e-4) return;
+
+  mesh.position.lerp(a.clone().addScaledVector(dir, 0.5), 0.78);
+
+  const y = dir.normalize();
+  let x = new THREE.Vector3().crossVectors(y, normal).normalize();
+  if (x.lengthSq() < 1e-4) x.set(1, 0, 0);
+  const z = new THREE.Vector3().crossVectors(x, y).normalize();
+  const q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
+
+  if (!ud.has) ud.quats[idx].copy(q);
+  else ud.quats[idx].slerp(q, 0.68);
+  mesh.quaternion.copy(ud.quats[idx]);
+  mesh.scale.set(scale, len, scale);
+
+  // Dynamic pistons
+  if (mesh.userData.pistons) {
+    const flex = Math.min(1, Math.max(0, 1.15 - len / (scale * 1.15)));
+    mesh.userData.pistons.forEach(p => {
+      p.scale.y = 0.5 + flex * 0.75;
+      p.position.y = flex * 0.14;
+    });
+  }
+}
+
+function updateHand(root, lms) {
+  const ud = root.userData;
+  const vw = videoEl.videoWidth || 1280;
+  const vh = videoEl.videoHeight || 720;
+  const cs = Math.max(W / vw, H / vh);
+  const dw = vw * cs, dh = vh * cs;
+
+  for (let i = 0; i < 21; i++) {
+    const lm = lms[i];
+    const u = isMirrored ? (1 - lm.x) : lm.x;
+    const t = new THREE.Vector3((u - 0.5) * dw, -(lm.y - 0.5) * dh, -lm.z * dw * 1.15);
+    if (!ud.has) ud.pts[i].copy(t);
+    else ud.pts[i].lerp(t, 0.72);
+  }
+
+  // Playback override
+  if (S.playing && S.recorded) {
+    const t = (performance.now() * 0.001) % 4;
+    const blend = t < 2 ? t / 2 : (4 - t) / 2;
+    for (let i = 0; i < 21; i++) {
+      ud.pts[i].lerpVectors(ud.pts[i], S.recorded[i], 0.15);
+    }
+  }
+
+  const pw = ud.pts[5].distanceTo(ud.pts[17]);
+  const pl = ud.pts[0].distanceTo(ud.pts[9]);
+  const us = Math.max(pw * 0.42, 14);
+
+  const vUp = new THREE.Vector3().subVectors(ud.pts[9], ud.pts[0]).normalize();
+  const vAc = new THREE.Vector3().subVectors(ud.pts[17], ud.pts[5]).normalize();
+  let vN = new THREE.Vector3().crossVectors(vAc, vUp).normalize();
+  if (vN.z < 0) vN.negate();
+  const vR = new THREE.Vector3().crossVectors(vUp, vN).normalize();
+  const pq = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(vR, vUp, vN));
+  const pc = new THREE.Vector3().add(ud.pts[0]).add(ud.pts[5]).add(ud.pts[9]).add(ud.pts[13]).add(ud.pts[17]).multiplyScalar(0.2);
+
+  if (!ud.has) { ud.palmPos.copy(pc); ud.palmQuat.copy(pq); }
+  else { ud.palmPos.lerp(pc, 0.72); ud.palmQuat.slerp(pq, 0.68); }
+
+  ud.palm.position.copy(ud.palmPos);
+  ud.palm.quaternion.copy(ud.palmQuat);
+  ud.palm.scale.set(pw * 1.26, pl * 1.04, us * 1.38);
+
+  ud.forearm.position.copy(ud.pts[0]);
+  ud.forearm.quaternion.copy(ud.palmQuat);
+  ud.forearm.scale.setScalar(us * 1.24);
+
+  ud.PAIRS.forEach(([a, b, fn, seg], i) => {
+    const ff = fn === 'pinky' ? 0.85 : (fn === 'thumb' ? 1.09 : 1);
+    orient(ud.phalanges[i], ud.pts[a], ud.pts[b], us * ff * (1 - seg * 0.075), vN, i, ud);
+  });
+
+  for (let i = 0; i < 21; i++) {
+    ud.joints[i].position.copy(ud.pts[i]);
+    ud.joints[i].quaternion.copy(ud.palmQuat);
+    ud.joints[i].scale.setScalar(us * 0.93);
+  }
+
+  // Tendons
+  const tipIdx = [4, 8, 12, 16, 20];
+  ud.tendons.forEach((t, fi) => {
+    const from = ud.pts[0].clone().lerp(ud.pts[9], 0.3);
+    const to = ud.pts[tipIdx[fi]];
+    const mid = from.clone().lerp(to, 0.5);
+    const len = from.distanceTo(to);
+    t.position.copy(mid);
+    const dir = new THREE.Vector3().subVectors(to, from).normalize();
+    t.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+    t.scale.set(0.7, len, 0.7);
+  });
+
+  ud.has = true;
+  root.visible = true;
+  ud.appear += (1 - ud.appear) * 0.11;
+  root.scale.setScalar(ud.appear);
+}
+
+function hideHand(root) {
+  const ud = root.userData;
+  ud.appear += (0 - ud.appear) * 0.14;
+  root.scale.setScalar(ud.appear);
+  if (ud.appear < 0.02) { root.visible = false; ud.has = false; }
+}
+
+/* ---------- Gestures ---------- */
+const GESTURE_COLORS = {
+  'Кулак': 0xef4444, 'Открыта': 0x22c55e, 'Указатель': 0x3b82f6,
+  'Мир': 0xa855f7, 'Пистолет': 0xf59e0b, 'Лайк': 0xec4899, 'Частично': 0x94a3b8
+};
+
+function detectGesture(lms) {
+  const tips = [4, 8, 12, 16, 20], pips = [3, 7, 11, 15, 19], w = lms[0];
+  let ext = 0;
+  const st = [];
+  for (let i = 0; i < 5; i++) {
+    const tip = lms[tips[i]], pip = lms[pips[i]];
+    const td = Math.hypot(tip.x - w.x, tip.y - w.y);
+    const pd = Math.hypot(pip.x - w.x, pip.y - w.y);
+    const e = td > pd * 1.12;
+    st.push(e);
+    if (e) ext++;
+  }
+  if (ext === 0) return 'Кулак';
+  if (ext === 5) return 'Открыта';
+  if (st[1] && !st[2] && !st[3] && !st[4]) return 'Указатель';
+  if (st[1] && st[2] && !st[3] && !st[4]) return 'Мир';
+  if (st[0] && st[1] && !st[2] && !st[3] && !st[4]) return 'Пистолет';
+  if (st[0] && !st[1] && !st[2] && !st[3] && !st[4]) return 'Лайк';
+  if (ext >= 3) return 'Частично';
+  return '—';
+}
+
+function setLedColor(root, hex) {
+  const c = new THREE.Color(hex);
+  root.traverse(o => {
+    if (o.userData.isLed && o.material) {
+      o.material.color.copy(c);
+      o.material.emissive.copy(c);
+    }
+  });
+  ledPoint.color.copy(c);
+}
+
+/* ---------- Audio ---------- */
+function initAudio() {
+  if (!S.audioCtx) S.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+}
+function beep(freq, dur, type = 'square', vol = 0.06) {
+  if (!S.soundOn || !S.audioCtx) return;
+  const o = S.audioCtx.createOscillator();
+  const g = S.audioCtx.createGain();
+  o.connect(g); g.connect(S.audioCtx.destination);
+  o.type = type; o.frequency.value = freq;
+  g.gain.setValueAtTime(vol, S.audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, S.audioCtx.currentTime + dur);
+  o.start(); o.stop(S.audioCtx.currentTime + dur);
+}
+function playServo(v = 0.3) { beep(150 + Math.random() * 130, 0.055, 'square', v * 0.07); }
+function playHydro() { beep(80, 0.14, 'sawtooth', 0.045); }
+
+/* ---------- MediaPipe ---------- */
+const videoEl = document.getElementById('video');
+const startScreen = document.getElementById('startScreen');
+let facingMode = 'user', isMirrored = true, loopRunning = false;
+let lastT = performance.now(), frames = 0, fps = 0, time = 0;
+let lastGesture = '—', conf = 0;
+
+const hands = new Hands({
+  locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
+});
+hands.setOptions({
+  maxNumHands: 2,
+  modelComplexity: 1,
+  minDetectionConfidence: 0.58,
+  minTrackingConfidence: 0.58
+});
+
+hands.onResults(res => {
+  if (S.frozen) return;
+
+  const n = res.multiHandLandmarks?.length || 0;
+  if (n < 1) hideHand(handL);
+  if (n < 2) hideHand(handR);
+
+  if (res.multiHandLandmarks) {
+    res.multiHandLandmarks.forEach((lms, i) => {
+      const label = res.multiHandedness?.[i]?.label || 'Right';
+      const target = label === 'Right' ? handR : handL;
+      updateHand(target, lms);
+
+      if (i === 0) {
+        lastGesture = detectGesture(lms);
+        conf = res.multiHandedness?.[0]?.score || 0.75;
+        const col = GESTURE_COLORS[lastGesture] || 0x94a3b8;
+        setLedColor(handL, col);
+        setLedColor(handR, col);
+
+        // Load + temp
+        let flexSum = 0;
+        const tips = [4,8,12,16,20], pips = [3,7,11,15,19];
+        for (let f = 0; f < 5; f++) {
+          const tip = lms[tips[f]], pip = lms[pips[f]];
+          flexSum += Math.max(0, 1 - Math.hypot(tip.x - pip.x, tip.y - pip.y) * 8);
+        }
+        S.load = Math.min(100, flexSum * 22);
+        S.temp = 36.1 + S.load * 0.04 + Math.sin(time * 1.4) * 0.25;
+
+        // Motion → sound + particles
+        let delta = 0;
+        for (let f = 0; f < 5; f++) {
+          const tip = lms[tips[f]], pip = lms[pips[f]];
+          const ang = Math.atan2(tip.y - pip.y, tip.x - pip.x);
+          delta += Math.abs(ang - (S.lastAngles[f] || 0));
+          S.lastAngles[f] = ang;
+        }
+        if (delta > 0.38) {
+          playServo(Math.min(delta, 1));
+          if (delta > 0.6) {
+            playHydro();
+            const mid = target.userData.pts[9].clone();
+            spawnParticles(mid, 8 + Math.floor(delta * 6));
+          }
+          if (delta > 0.85 && navigator.vibrate) navigator.vibrate(10);
+        }
+      }
+    });
+  }
+
+  document.getElementById('handsVal').textContent = n;
+  document.getElementById('gestureVal').textContent = lastGesture;
+  const ce = document.getElementById('confVal');
+  ce.textContent = (conf * 100).toFixed(0) + '%';
+  ce.className = 'hud-value ' + (conf > 0.8 ? 'green' : conf > 0.55 ? 'yellow' : 'red');
+  document.getElementById('loadVal').textContent = S.load.toFixed(0) + '%';
+  document.getElementById('tempVal').textContent = 'T° ' + S.temp.toFixed(1);
+});
+
+/* ---------- Loop ---------- */
+async function initCamera() {
+  try {
+    if (videoEl.srcObject) videoEl.srcObject.getTracks().forEach(t => t.stop());
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: facingMode }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false
+    });
+    videoEl.srcObject = stream;
+    await videoEl.play();
+    startScreen.style.display = 'none';
+    document.getElementById('hud').style.display = S.hudOn ? 'flex' : 'none';
+    document.getElementById('controls').style.display = 'flex';
+    document.getElementById('themeBar').style.display = 'flex';
+    initAudio();
+    if (!loopRunning) { loopRunning = true; requestAnimationFrame(loop); }
+  } catch (e) {
+    startScreen.style.display = 'flex';
+    toast('Нет доступа к камере');
+  }
+}
+
+let prevNow = performance.now();
+async function loop(now) {
+  frames++;
+  if (now - lastT >= 1000) {
+    fps = frames; frames = 0; lastT = now;
+    document.getElementById('fpsVal').textContent = fps;
+    // Adaptive quality
+    if (fps < 28 && renderer.getPixelRatio() > 1) renderer.setPixelRatio(1);
+    else if (fps > 50 && devicePixelRatio > 1) renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  }
+  const dt = (now - prevNow) / 1000;
+  prevNow = now;
+  time = now * 0.001;
+
+  if (videoEl.readyState >= 2 && !S.frozen) await hands.send({ image: videoEl });
+
+  // LED pulse
+  const pulse = 2.2 + Math.sin(time * 3.0) * 1.1;
+  [handL, handR].forEach(h => h.traverse(o => {
+    if (o.userData.isLed && o.material?.emissiveIntensity !== undefined)
+      o.material.emissiveIntensity = pulse;
+  }));
+  ledPoint.intensity = 1.6 + Math.sin(time * 2.3) * 0.6;
+
+  updateParticles(dt);
+  renderer.render(scene, camera);
+  requestAnimationFrame(loop);
+}
+
+/* ---------- UI ---------- */
+document.getElementById('startBtn').onclick = initCamera;
+document.getElementById('camFlip').onclick = () => {
+  facingMode = facingMode === 'user' ? 'environment' : 'user';
+  isMirrored = facingMode === 'user';
+  videoEl.style.transform = isMirrored ? 'scaleX(-1)' : 'none';
+  initCamera();
+};
+
+document.getElementById('btnFreeze').onclick = function () {
+  S.frozen = !S.frozen;
+  this.classList.toggle('active', S.frozen);
+  toast(S.frozen ? 'Заморожено' : 'Трекинг');
+};
+
+document.getElementById('btnShot').onclick = () => {
+  const a = document.createElement('a');
+  a.download = `bionic-v4-${Date.now()}.png`;
+  a.href = renderer.domElement.toDataURL('image/png');
+  a.click();
+  toast('Скриншот');
+};
+
+document.getElementById('btnMode').onclick = function () {
+  S.mode = (S.mode + 1) % 3;
+  applyMaterials(handL);
+  applyMaterials(handR);
+  document.getElementById('modeLabel').textContent = S.modes[S.mode] + ' • ' + S.themes[S.theme];
+  toast('Режим: ' + S.modes[S.mode]);
+};
+
+document.getElementById('btnRec').onclick = function () {
+  if (!S.recording && !S.playing) {
+    // Record
+    if (handR.visible || handL.visible) {
+      const src = handR.visible ? handR : handL;
+      S.recorded = src.userData.pts.map(p => p.clone());
+      S.recording = true;
+      this.classList.add('active');
+      this.textContent = '⏹';
+      toast('Поза записана — нажми ещё раз для Play');
+    } else toast('Нет руки');
+  } else if (S.recording) {
+    // Start playback
+    S.recording = false;
+    S.playing = true;
+    this.textContent = '▶';
+    toast('Воспроизведение позы');
+  } else {
+    // Stop playback
+    S.playing = false;
+    this.classList.remove('active');
+    this.textContent = '⏺';
+    toast('Стоп');
+  }
+};
+
+document.getElementById('btnSound').onclick = function () {
+  S.soundOn = !S.soundOn;
+  this.textContent = S.soundOn ? '🔊' : '🔇';
+  this.classList.toggle('active', S.soundOn);
+  if (S.soundOn) initAudio();
+  toast(S.soundOn ? 'Звук вкл' : 'Звук выкл');
+};
+
+document.getElementById('btnHud').onclick = function () {
+  S.hudOn = !S.hudOn;
+  document.getElementById('hud').style.display = S.hudOn ? 'flex' : 'none';
+  this.classList.toggle('active', S.hudOn);
+};
+
+document.querySelectorAll('.theme-dot').forEach(d => {
+  d.onclick = () => setTheme(+d.dataset.theme);
+});
+
+window.addEventListener('resize', () => {
+  W = innerWidth; H = innerHeight;
+  camera.left = -W/2; camera.right = W/2; camera.top = H/2; camera.bottom = -H/2;
+  camera.updateProjectionMatrix();
+  renderer.setSize(W, H);
+});
+
+initCamera();
+</script>
+</body>
+</html>
