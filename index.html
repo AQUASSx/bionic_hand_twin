@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Bionic Robot Hand Twin - Pro Edition</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-tap-highlight-color: transparent; }
+    body, html { width: 100%; height: 100%; overflow: hidden; background: #000; font-family: sans-serif; }
+
+    #video {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      object-fit: cover;
+      z-index: 1;
+      transform: scaleX(-1);
+    }
+
+    #canvas3d {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      z-index: 2;
+      pointer-events: none;
+    }
+
+    #camFlip {
+      position: absolute; top: 16px; right: 16px;
+      z-index: 5; width: 44px; height: 44px;
+      border-radius: 50%;
+      background: rgba(20, 24, 30, 0.45);
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      color: rgba(255, 255, 255, 0.85);
+      font-size: 20px; display: flex;
+      align-items: center; justify-content: center;
+      cursor: pointer; backdrop-filter: blur(8px);
+      transition: transform 0.2s, background 0.2s;
+    }
+    #camFlip:active { transform: scale(0.88); background: rgba(40, 48, 60, 0.7); }
+
+    #startScreen {
+      position: absolute; inset: 0; z-index: 10;
+      background: rgba(8, 10, 14, 0.94);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 16px;
+    }
+    #startBtn {
+      padding: 16px 36px; font-size: 16px; font-weight: 700;
+      color: #fff; background: #2563eb;
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      border-radius: 50px; cursor: pointer;
+      box-shadow: 0 10px 30px rgba(37, 99, 235, 0.4);
+      letter-spacing: 0.5px; transition: background 0.2s;
+    }
+    #startBtn:hover { background: #1d4ed8; }
+    .status-text { color: #94a3b8; font-size: 13px; text-align: center; max-width: 280px; line-height: 1.4; }
+  </style>
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+</head>
+<body>
+  <div id="startScreen">
+    <button id="startBtn">Включить камеру</button>
+    <div class="status-text">Поместите руку перед камерой для активации титанового цифрового аватара.</div>
+  </div>
+
+  <button id="camFlip" title="Сменить камеру">⟳</button>
+  <video id="video" playsinline muted></video>
+  <div id="canvas3d"></div>
+
+<script>
+// ============================================================================
+// 1. THREE.JS СЦЕНА И СТУДИЙНОЕ PBR ОСВЕЩЕНИЕ
+// ============================================================================
+const container = document.getElementById('canvas3d');
+const scene = new THREE.Scene();
+
+let W = window.innerWidth;
+let H = window.innerHeight;
+const camera = new THREE.OrthographicCamera(-W / 2, W / 2, H / 2, -H / 2, -3000, 3000);
+camera.position.z = 1200;
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+renderer.setSize(W, H);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.4;
+container.appendChild(renderer.domElement);
+
+scene.add(new THREE.HemisphereLight(0xf8fafc, 0x090d16, 1.8));
+
+const mainLight = new THREE.DirectionalLight(0xffffff, 3.2);
+mainLight.position.set(400, 700, 1000);
+scene.add(mainLight);
+
+const sideLight = new THREE.DirectionalLight(0x60a5fa, 2.2);
+sideLight.position.set(-700, 200, 500);
+scene.add(sideLight);
+
+const fillLight = new THREE.DirectionalLight(0x334155, 1.6);
+fillLight.position.set(0, -600, 400);
+scene.add(fillLight);
+
+// ============================================================================
+// 2. КИБЕРНЕТИЧЕСКИЕ МАТЕРИАЛЫ ВЫСОКОГО УРОВНЯ
+// ============================================================================
+const matGunmetal = new THREE.MeshStandardMaterial({ color: 0x1e222b, roughness: 0.32, metalness: 0.82 });
+const matDarkCore = new THREE.MeshStandardMaterial({ color: 0x0c0f14, roughness: 0.70, metalness: 0.40 });
+const matTitanium = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.14, metalness: 0.96 });
+const matCeramicWhite = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.24, metalness: 0.28 });
+const matBronze = new THREE.MeshStandardMaterial({ color: 0xd97706, roughness: 0.22, metalness: 0.90 });
+const matCyberRed = new THREE.MeshStandardMaterial({ color: 0xef4444, emissive: 0xdc2626, emissiveIntensity: 2.2, roughness: 0.15 });
+
+// ============================================================================
+// 3. КОНСТРУКЦИЯ 3D-КИСТИ
+// ============================================================================
+const robotHand = new THREE.Group();
+robotHand.visible = false;
+scene.add(robotHand);
+
+function createScrew(radius = 0.04) {
+  const sGrp = new THREE.Group();
+  const socket = new THREE.Mesh(new THREE.CylinderGeometry(radius * 1.3, radius * 1.3, 0.03, 14), matDarkCore);
+  const head = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, 0.05, 6), matTitanium);
+  sGrp.add(socket, head);
+  sGrp.rotation.x = Math.PI / 2;
+  return sGrp;
+}
+
+// --- ПЯСТЬ ЛАДОНИ ---
+const palmAssembly = new THREE.Group();
+robotHand.add(palmAssembly);
+
+const innerChassis = new THREE.Mesh(new THREE.BoxGeometry(0.94, 0.92, 0.44), matDarkCore);
+palmAssembly.add(innerChassis);
+
+const upperPalmPlate = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.46, 0.50), matGunmetal);
+upperPalmPlate.position.set(0, 0.25, 0.04);
+palmAssembly.add(upperPalmPlate);
+
+const centerBridge = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.50, 0.48), matGunmetal);
+centerBridge.position.set(0.02, -0.08, 0.03);
+palmAssembly.add(centerBridge);
+
+const coreBezel = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.17, 0.08, 24), matTitanium);
+coreBezel.rotation.x = Math.PI / 2;
+coreBezel.position.set(0.02, 0.02, 0.26);
+palmAssembly.add(coreBezel);
+
+const coreGlow = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.10, 20), matCyberRed);
+coreGlow.rotation.x = Math.PI / 2;
+coreGlow.position.set(0.02, 0.02, 0.265);
+palmAssembly.add(coreGlow);
+
+const thenarPad = new THREE.Mesh(new THREE.SphereGeometry(0.38, 24, 20), matGunmetal);
+thenarPad.scale.set(0.95, 1.4, 0.85);
+thenarPad.position.set(-0.35, -0.18, 0.08);
+thenarPad.rotation.z = -0.35;
+palmAssembly.add(thenarPad);
+
+const hypothenarPad = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.26, 0.75, 20), matGunmetal);
+hypothenarPad.scale.set(1.0, 1.0, 1.18);
+hypothenarPad.position.set(0.40, -0.10, 0.06);
+hypothenarPad.rotation.z = 0.12;
+palmAssembly.add(hypothenarPad);
+
+// --- ПРЕДПЛЕЧЬЕ ---
+const forearmAssembly = new THREE.Group();
+robotHand.add(forearmAssembly);
+
+const wristCore = new THREE.Mesh(new THREE.CylinderGeometry(0.44, 0.46, 0.44, 24), matDarkCore);
+wristCore.rotation.z = Math.PI / 2;
+forearmAssembly.add(wristCore);
+
+const wristCaps = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 1.02, 24), matTitanium);
+wristCaps.rotation.z = Math.PI / 2;
+forearmAssembly.add(wristCaps);
+
+const forearmCore = new THREE.Mesh(new THREE.CylinderGeometry(0.44, 0.52, 1.8, 28), matDarkCore);
+forearmCore.position.y = -1.05;
+forearmAssembly.add(forearmCore);
+
+const gauntletMain = new THREE.Mesh(new THREE.CylinderGeometry(0.49, 0.57, 1.6, 24, 1, false, -Math.PI * 0.4, Math.PI * 0.8), matGunmetal);
+gauntletMain.position.set(0, -1.05, 0.04);
+forearmAssembly.add(gauntletMain);
+
+const gauntletSideL = new THREE.Mesh(new THREE.BoxGeometry(0.18, 1.52, 0.7), matCeramicWhite);
+gauntletSideL.position.set(-0.46, -1.05, 0.0);
+gauntletSideL.rotation.z = -0.05;
+forearmAssembly.add(gauntletSideL);
+
+const gauntletSideR = new THREE.Mesh(new THREE.BoxGeometry(0.18, 1.52, 0.7), matCeramicWhite);
+gauntletSideR.position.set(0.46, -1.05, 0.0);
+gauntletSideR.rotation.z = 0.05;
+forearmAssembly.add(gauntletSideR);
+
+// --- ФАЛАНГИ ПАЛЬЦЕВ (15 СЕГМЕНТОВ) ---
+const BONE_PAIRS = [
+  [1, 2, 'thumb', 0],  [2, 3, 'thumb', 1],  [3, 4, 'thumb', 2],
+  [5, 6, 'index', 0],  [6, 7, 'index', 1],  [7, 8, 'index', 2],
+  [9, 10, 'middle', 0],[10, 11, 'middle', 1],[11, 12, 'middle', 2],
+  [13, 14, 'ring', 0], [14, 15, 'ring', 1], [15, 16, 'ring', 2],
+  [17, 18, 'pinky', 0],[18, 19, 'pinky', 1],[19, 20, 'pinky', 2]
+];
+
+function createVolumetricPhalanx(segIdx, isThumb) {
+  const grp = new THREE.Group();
+  const isDistal = (segIdx === 2);
+  const wScale = isThumb ? 1.15 : 1.0;
+
+  const innerTube = new THREE.Mesh(new THREE.CylinderGeometry(0.25 * wScale, 0.29 * wScale, 0.94, 20), matDarkCore);
+  grp.add(innerTube);
+
+  [-0.23 * wScale, 0.23 * wScale].forEach(rx => {
+    const piston = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.90, 12), matTitanium);
+    piston.position.set(rx, 0, -0.04);
+    grp.add(piston);
+  });
+
+  if (!isDistal) {
+    const outerShell = new THREE.Mesh(new THREE.CylinderGeometry(0.34 * wScale, 0.37 * wScale, 0.80, 20), matGunmetal);
+    outerShell.scale.set(1.05, 1.0, 0.92);
+    outerShell.position.z = 0.05;
+    grp.add(outerShell);
+
+    const dorsalPlate = new THREE.Mesh(new THREE.BoxGeometry(0.48 * wScale, 0.76, 0.32), matGunmetal);
+    dorsalPlate.position.z = 0.14;
+    grp.add(dorsalPlate);
+
+    const scTop = createScrew(0.055);
+    scTop.position.set(0, 0.20, 0.32);
+    grp.add(scTop);
+
+    const scBot = createScrew(0.055);
+    scBot.position.set(0, -0.20, 0.32);
+    grp.add(scBot);
+
+    const gripPad = new THREE.Mesh(new THREE.BoxGeometry(0.52 * wScale, 0.68, 0.28), matDarkCore);
+    gripPad.position.z = -0.14;
+    grp.add(gripPad);
+  } else {
+    const baseCollar = new THREE.Mesh(new THREE.CylinderGeometry(0.31 * wScale, 0.34 * wScale, 0.44, 20), matGunmetal);
+    baseCollar.position.y = -0.18;
+    grp.add(baseCollar);
+
+    const fingerTip = new THREE.Mesh(new THREE.SphereGeometry(0.29 * wScale, 22, 20), matDarkCore);
+    fingerTip.scale.set(0.96, 1.45, 0.92);
+    fingerTip.position.y = 0.22;
+    grp.add(fingerTip);
+
+    const nailShield = new THREE.Mesh(new THREE.SphereGeometry(0.28 * wScale, 18, 16), matGunmetal);
+    nailShield.scale.set(0.88, 1.32, 0.55);
+    nailShield.position.set(0, 0.20, 0.10);
+    grp.add(nailShield);
+  }
+  return grp;
+}
+
+const phalanxMeshes = BONE_PAIRS.map(([, , fname, segIdx]) => {
+  const mesh = createVolumetricPhalanx(segIdx, fname === 'thumb');
+  robotHand.add(mesh);
+  return mesh;
+});
+
+// --- СУСТАВЫ И ШАРНИРЫ ---
+const KNUCKLE_IDS = new Set([1, 2, 5, 9, 13, 17]);
+const TIP_IDS = new Set([4, 8, 12, 16, 20]);
+
+const jointAssemblies = [];
+for (let i = 0; i < 21; i++) {
+  const jGrp = new THREE.Group();
+  if (KNUCKLE_IDS.has(i)) {
+    const drum = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 0.60, 22), matBronze);
+    drum.rotation.z = Math.PI / 2;
+    jGrp.add(drum);
+
+    const pin = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.74, 16), matTitanium);
+    pin.rotation.z = Math.PI / 2;
+    jGrp.add(pin);
+  } else if (!TIP_IDS.has(i) && i !== 0) {
+    const housing = new THREE.Mesh(new THREE.SphereGeometry(0.31, 18, 18), matDarkCore);
+    jGrp.add(housing);
+
+    const pin = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.62, 16), matTitanium);
+    pin.rotation.z = Math.PI / 2;
+    jGrp.add(pin);
+  }
+  robotHand.add(jGrp);
+  jointAssemblies.push(jGrp);
+}
+
+// ============================================================================
+// 4. СГЛАЖИВАНИЕ И КИНЕМАТИКА (EMA + SLERP ДЛЯ ПЛАВНОСТИ БЕЗ ДЕРГАНИЙ)
+// ============================================================================
+const smoothedPts = Array.from({ length: 21 }, () => new THREE.Vector3());
+const smoothedQuats = Array.from({ length: BONE_PAIRS.length }, () => new THREE.Quaternion());
+const palmSmoothedPos = new THREE.Vector3();
+const palmSmoothedQuat = new THREE.Quaternion();
+let hasTrackedPts = false;
+
+function orientBoneSegment(mesh, pA, pB, radiusScale, palmNormal, boneIdx) {
+  const dir = new THREE.Vector3().subVectors(pB, pA);
+  const len = dir.length();
+  if (len < 1e-4) return;
+
+  const targetPos = pA.clone().addScaledVector(dir, 0.5);
+  mesh.position.lerp(targetPos, 0.75);
+
+  const yAxis = dir.clone().normalize();
+  const xAxis = new THREE.Vector3().crossVectors(yAxis, palmNormal).normalize();
+  if (xAxis.lengthSq() < 1e-4) xAxis.set(1, 0, 0);
+  const zAxis = new THREE.Vector3().crossVectors(xAxis, yAxis).normalize();
+
+  const basis = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
+  const targetQuat = new THREE.Quaternion().setFromRotationMatrix(basis);
+
+  if (!hasTrackedPts) {
+    smoothedQuats[boneIdx].copy(targetQuat);
+  } else {
+    smoothedQuats[boneIdx].slerp(targetQuat, 0.65);
+  }
+  mesh.quaternion.copy(smoothedQuats[boneIdx]);
+  mesh.scale.set(radiusScale, len, radiusScale);
+}
+
+function updateRobotHand(landmarks) {
+  const videoEl = document.getElementById('video');
+  const vw = videoEl.videoWidth || 1280;
+  const vh = videoEl.videoHeight || 720;
+
+  const coverScale = Math.max(W / vw, H / vh);
+  const dispW = vw * coverScale;
+  const dispH = vh * coverScale;
+
+  for (let i = 0; i < 21; i++) {
+    const lm = landmarks[i];
+    const u = isMirrored ? (1.0 - lm.x) : lm.x;
+    const v = lm.y;
+
+    const target = new THREE.Vector3(
+      (u - 0.5) * dispW,
+      -(v - 0.5) * dispH,
+      -lm.z * dispW * 1.15
+    );
+
+    if (!hasTrackedPts) {
+      smoothedPts[i].copy(target);
+    } else {
+      smoothedPts[i].lerp(target, 0.70); // Высокая плавность фильтрации трекинга
+    }
+  }
+
+  const palmWidth = smoothedPts[5].distanceTo(smoothedPts[17]);
+  const palmLength = smoothedPts[0].distanceTo(smoothedPts[9]);
+  const unitScale = Math.max(palmWidth * 0.42, 14.0);
+
+  const vUp = new THREE.Vector3().subVectors(smoothedPts[9], smoothedPts[0]).normalize();
+  const vAcross = new THREE.Vector3().subVectors(smoothedPts[17], smoothedPts[5]).normalize();
+  let vNormal = new THREE.Vector3().crossVectors(vAcross, vUp).normalize();
+  if (vNormal.z < 0) vNormal.negate();
+  const vRight = new THREE.Vector3().crossVectors(vUp, vNormal).normalize();
+
+  const palmBasis = new THREE.Matrix4().makeBasis(vRight, vUp, vNormal);
+  const targetPalmQuat = new THREE.Quaternion().setFromRotationMatrix(palmBasis);
+
+  const palmCenter = new THREE.Vector3()
+    .add(smoothedPts[0])
+    .add(smoothedPts[5])
+    .add(smoothedPts[9])
+    .add(smoothedPts[13])
+    .add(smoothedPts[17])
+    .multiplyScalar(0.2);
+
+  if (!hasTrackedPts) {
+    palmSmoothedPos.copy(palmCenter);
+    palmSmoothedQuat.copy(targetPalmQuat);
+  } else {
+    palmSmoothedPos.lerp(palmCenter, 0.7);
+    palmSmoothedQuat.slerp(targetPalmQuat, 0.65);
+  }
+
+  palmAssembly.position.copy(palmSmoothedPos);
+  palmAssembly.quaternion.copy(palmSmoothedQuat);
+  palmAssembly.scale.set(palmWidth * 1.24, palmLength * 1.02, unitScale * 1.35);
+
+  forearmAssembly.position.copy(smoothedPts[0]);
+  forearmAssembly.quaternion.copy(palmSmoothedQuat);
+  forearmAssembly.scale.setScalar(unitScale * 1.22);
+
+  BONE_PAIRS.forEach(([a, b, fname, segIdx], idx) => {
+    const fFactor = fname === 'pinky' ? 0.86 : (fname === 'thumb' ? 1.08 : 1.0);
+    const taper = 1.0 - segIdx * 0.07;
+    orientBoneSegment(
+      phalanxMeshes[idx],
+      smoothedPts[a],
+      smoothedPts[b],
+      unitScale * fFactor * taper,
+      vNormal,
+      idx
+    );
+  });
+
+  for (let i = 0; i < 21; i++) {
+    jointAssemblies[i].position.copy(smoothedPts[i]);
+    jointAssemblies[i].quaternion.copy(palmSmoothedQuat);
+    jointAssemblies[i].scale.setScalar(unitScale * 0.92);
+  }
+
+  hasTrackedPts = true;
+}
+
+// ============================================================================
+// 5. ИНИЦИАЛИЗАЦИЯ КАМЕРЫ И MEDIAPIPE
+// ============================================================================
+const videoEl = document.getElementById('video');
+const startScreen = document.getElementById('startScreen');
+let facingMode = 'user';
+let isMirrored = true;
+let loopRunning = false;
+
+const hands = new Hands({
+  locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+hands.setOptions({
+  maxNumHands: 1,
+  modelComplexity: 1,
+  minDetectionConfidence: 0.65,
+  minTrackingConfidence: 0.65
+});
+
+hands.onResults(results => {
+  if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+    robotHand.visible = true;
+    updateRobotHand(results.multiHandLandmarks[0]);
+  } else {
+    robotHand.visible = false;
+    hasTrackedPts = false;
+  }
+});
+
+async function initCamera() {
+  try {
+    if (videoEl.srcObject) {
+      videoEl.srcObject.getTracks().forEach(t => t.stop());
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: facingMode },
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      },
+      audio: false
+    });
+    videoEl.srcObject = stream;
+    await videoEl.play();
+    startScreen.style.display = 'none';
+
+    if (!loopRunning) {
+      loopRunning = true;
+      requestAnimationFrame(renderLoop);
+    }
+  } catch (e) {
+    startScreen.style.display = 'flex';
+  }
+}
+
+async function renderLoop() {
+  if (videoEl.readyState >= 2) {
+    await hands.send({ image: videoEl });
+  }
+  renderer.render(scene, camera);
+  requestAnimationFrame(renderLoop);
+}
+
+document.getElementById('startBtn').addEventListener('click', initCamera);
+
+document.getElementById('camFlip').addEventListener('click', () => {
+  facingMode = facingMode === 'user' ? 'environment' : 'user';
+  isMirrored = (facingMode === 'user');
+  videoEl.style.transform = isMirrored ? 'scaleX(-1)' : 'none';
+  initCamera();
+});
+
+window.addEventListener('resize', () => {
+  W = window.innerWidth;
+  H = window.innerHeight;
+  camera.left = -W / 2;
+  camera.right = W / 2;
+  camera.top = H / 2;
+  camera.bottom = -H / 2;
+  camera.updateProjectionMatrix();
+  renderer.setSize(W, H);
+});
+
+initCamera();
+</script>
+</body>
+</html>
