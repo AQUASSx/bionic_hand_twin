@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>3D Robot Hand</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-tap-highlight-color: transparent; }
+    body, html {
+      width: 100%; height: 100%; overflow: hidden;
+      background: #000;
+    }
+
+    #video {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      object-fit: cover;
+      z-index: 1;
+      transform: scaleX(-1);
+    }
+
+    #canvas3d {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      z-index: 2;
+      pointer-events: none;
+    }
+
+    /* Единственная полупрозрачная иконка смены камеры (фронтальная / основная) */
+    #camFlip {
+      position: absolute; top: 16px; right: 16px;
+      z-index: 5; width: 42px; height: 42px;
+      border-radius: 50%;
+      background: rgba(20, 24, 30, 0.35);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      color: rgba(255, 255, 255, 0.75);
+      font-size: 20px; display: flex;
+      align-items: center; justify-content: center;
+      cursor: pointer; backdrop-filter: blur(6px);
+      transition: opacity 0.2s, transform 0.2s;
+    }
+    #camFlip:active { transform: scale(0.9); }
+
+    /* Минималистичная кнопка запуска, которая полностью исчезает после разрешения камеры */
+    #startScreen {
+      position: absolute; inset: 0; z-index: 10;
+      background: rgba(8, 10, 14, 0.92);
+      display: flex; align-items: center; justify-content: center;
+    }
+    #startBtn {
+      padding: 16px 32px; font-size: 16px; font-weight: 700;
+      color: #fff; background: #1e242d;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      border-radius: 50px; cursor: pointer;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
+      font-family: sans-serif; letter-spacing: 0.5px;
+    }
+  </style>
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+</head>
+<body>
+  <div id="startScreen">
+    <button id="startBtn">Включить камеру</button>
+  </div>
+
+  <button id="camFlip" title="Сменить камеру">⟳</button>
+  <video id="video" playsinline muted></video>
+  <div id="canvas3d"></div>
+
+<script>
+// ============================================================================
+// 1. THREE.JS СЦЕНА И РЕАЛИСТИЧНОЕ ОБЪЁМНОЕ ОСВЕЩЕНИЕ (PBR)
+// ============================================================================
+const container = document.getElementById('canvas3d');
+const scene = new THREE.Scene();
+
+let W = window.innerWidth;
+let H = window.innerHeight;
+const camera = new THREE.OrthographicCamera(-W / 2, W / 2, H / 2, -H / 2, -3000, 3000);
+camera.position.z = 1200;
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+renderer.setSize(W, H);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.35;
+container.appendChild(renderer.domElement);
+
+// Многоуровневый студийный свет для глубокого 3D-объёма, бликов и теней на гранях
+scene.add(new THREE.HemisphereLight(0xf1f5f9, 0x0f172a, 1.5));
+
+const mainLight = new THREE.DirectionalLight(0xffffff, 2.8);
+mainLight.position.set(350, 600, 900);
+scene.add(mainLight);
+
+const sideRimLight = new THREE.DirectionalLight(0x93c5fd, 2.0);
+sideRimLight.position.set(-600, 200, 400);
+scene.add(sideRimLight);
+
+const bottomFillLight = new THREE.DirectionalLight(0x475569, 1.4);
+bottomFillLight.position.set(0, -600, 300);
+scene.add(bottomFillLight);
+
+// ============================================================================
+// 2. МАТЕРИАЛЫ РОБОТА (В СТИЛЕ ALLEX И КИБЕР-БРОНИ)
+// ============================================================================
+// Матовый графитовый металл основных бронепластин кисти
+const matGunmetal = new THREE.MeshStandardMaterial({
+  color: 0x242830, roughness: 0.38, metalness: 0.72
+});
+// Тёмный внутренний каркас и прорезиненные подушечки
+const matDarkCore = new THREE.MeshStandardMaterial({
+  color: 0x111318, roughness: 0.68, metalness: 0.30
+});
+// Полированный титан/хром для винтов, осей и гидроцилиндров
+const matTitanium = new THREE.MeshStandardMaterial({
+  color: 0xe2e8f0, roughness: 0.16, metalness: 0.95
+});
+// Бежево-белый композит для внешних щитков предплечья (как у робота ALLEX)
+const matCeramicWhite = new THREE.MeshStandardMaterial({
+  color: 0xd8dee9, roughness: 0.28, metalness: 0.25
+});
+// Медно-бронзовые кольца подшипников и приводов
+const matBronze = new THREE.MeshStandardMaterial({
+  color: 0xc26d2d, roughness: 0.25, metalness: 0.88
+});
+// Тонкие светящиеся красные кибер-индикаторы внутри механизмов
+const matCyberRed = new THREE.MeshStandardMaterial({
+  color: 0xef4444, emissive: 0xdc2626, emissiveIntensity: 1.6, roughness: 0.2
+});
+
+// ============================================================================
+// 3. СБОРКА ВЫСОКОДЕТАЛИЗИРОВАННОЙ ОБЪЁМНОЙ 3D-КИСТИ
+// ============================================================================
+const robotHand = new THREE.Group();
+robotHand.visible = false;
+scene.add(robotHand);
+
+// Вспомогательная функция создания утопленного винта с головкой под шестигранник
+function createScrew(radius = 0.04) {
+  const sGrp = new THREE.Group();
+  const socket = new THREE.Mesh(new THREE.CylinderGeometry(radius * 1.25, radius * 1.25, 0.03, 14), matDarkCore);
+  const head = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, 0.045, 6), matTitanium);
+  sGrp.add(socket, head);
+  sGrp.rotation.x = Math.PI / 2;
+  return sGrp;
+}
+
+// --- 3.1 СЛОЖНЫЙ АНАТОМИЧЕСКИЙ КОРПУС ЛАДОНИ ---
+const palmAssembly = new THREE.Group();
+robotHand.add(palmAssembly);
+
+// 1) Внутренний несущий механический блок ладони
+const innerChassis = new THREE.Mesh(new THREE.BoxGeometry(0.92, 0.90, 0.42), matDarkCore);
+palmAssembly.add(innerChassis);
+
+// 2) Верхняя бронепластина пясти (под 4 пальцами) с винтами и скосами
+const upperPalmPlate = new THREE.Mesh(new THREE.BoxGeometry(0.98, 0.44, 0.48), matGunmetal);
+upperPalmPlate.position.set(0, 0.24, 0.04);
+palmAssembly.add(upperPalmPlate);
+
+// 3) Центральная углублённая пластина с механическими тягами и красным сенсорным ядром
+const centerBridge = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.48, 0.46), matGunmetal);
+centerBridge.position.set(0.02, -0.08, 0.03);
+palmAssembly.add(centerBridge);
+
+const coreBezel = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.16, 0.08, 24), matTitanium);
+coreBezel.rotation.x = Math.PI / 2;
+coreBezel.position.set(0.02, 0.02, 0.25);
+palmAssembly.add(coreBezel);
+
+const coreGlow = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.09, 20), matCyberRed);
+coreGlow.rotation.x = Math.PI / 2;
+coreGlow.position.set(0.02, 0.02, 0.255);
+palmAssembly.add(coreGlow);
+
+// 4) Объёмный анатомический модуль большого пальца (Тенар — как на фото ALLEX)
+const thenarPad = new THREE.Mesh(new THREE.SphereGeometry(0.36, 24, 20), matGunmetal);
+thenarPad.scale.set(0.95, 1.35, 0.82);
+thenarPad.position.set(-0.34, -0.18, 0.08);
+thenarPad.rotation.z = -0.35;
+palmAssembly.add(thenarPad);
+
+// 5) Боковой рельефный модуль мизинца (Гипотенар)
+const hypothenarPad = new THREE.Mesh(new THREE.CylinderGeometry(0.20, 0.24, 0.72, 20), matGunmetal);
+hypothenarPad.scale.set(1.0, 1.0, 1.15);
+hypothenarPad.position.set(0.38, -0.10, 0.06);
+hypothenarPad.rotation.z = 0.12;
+palmAssembly.add(hypothenarPad);
+
+// 6) Открытые серебристые гидропоршни внутри ладони
+[-0.32, -0.10, 0.12, 0.34].forEach(px => {
+  const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.88, 12), matTitanium);
+  rod.position.set(px, 0.05, -0.02);
+  palmAssembly.add(rod);
+
+  const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.42, 12), matBronze);
+  sleeve.position.set(px, -0.18, -0.02);
+  palmAssembly.add(sleeve);
+});
+
+// 7) Утопленные крепёжные винты на броне ладони (по референсу ALLEX)
+const palmScrews = [
+  [-0.36, 0.34, 0.28], [-0.12, 0.36, 0.28], [0.12, 0.36, 0.28], [0.36, 0.34, 0.28],
+  [-0.18, -0.18, 0.26], [0.18, -0.18, 0.26],
+  [-0.35, -0.25, 0.33], [0.38, -0.22, 0.28]
+];
+palmScrews.forEach(([sx, sy, sz]) => {
+  const sc = createScrew(0.036);
+  sc.position.set(sx, sy, sz);
+  palmAssembly.add(sc);
+});
+
+// --- 3.2 ОБЪЁМНЫЙ МЕХАНИЗМ ЗАПЯСТЬЯ И БРОНИРОВАННОЕ ПРЕДПЛЕЧЬЕ ---
+const forearmAssembly = new THREE.Group();
+robotHand.add(forearmAssembly);
+
+// Двухосевой шарнир запястья с открытыми гидроцилиндрами
+const wristCore = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.44, 0.42, 24), matDarkCore);
+wristCore.rotation.z = Math.PI / 2;
+forearmAssembly.add(wristCore);
+
+const wristCaps = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.26, 0.98, 24), matTitanium);
+wristCaps.rotation.z = Math.PI / 2;
+forearmAssembly.add(wristCaps);
+
+const wristGlowRing = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.45, 0.05, 24), matCyberRed);
+wristGlowRing.position.y = -0.18;
+forearmAssembly.add(wristGlowRing);
+
+// Два наклонных титановых амортизатора от запястья к предплечью
+[-0.28, 0.28].forEach(wx => {
+  const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.9, 14), matTitanium);
+  strut.position.set(wx, -0.55, 0.16);
+  strut.rotation.z = wx > 0 ? -0.12 : 0.12;
+  forearmAssembly.add(strut);
+});
+
+// Внутренний силовой цилиндр предплечья
+const forearmCore = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.50, 1.75, 28), matDarkCore);
+forearmCore.position.y = -1.05;
+forearmAssembly.add(forearmCore);
+
+// Внешние объёмные бронещитки предплечья (тёмный графит + белые панели ALLEX)
+const gauntletMain = new THREE.Mesh(new THREE.CylinderGeometry(0.47, 0.55, 1.55, 24, 1, false, -Math.PI * 0.4, Math.PI * 0.8), matGunmetal);
+gauntletMain.position.set(0, -1.05, 0.04);
+forearmAssembly.add(gauntletMain);
+
+const gauntletSideL = new THREE.Mesh(new THREE.BoxGeometry(0.18, 1.48, 0.68), matCeramicWhite);
+gauntletSideL.position.set(-0.44, -1.05, 0.0);
+gauntletSideL.rotation.z = -0.05;
+forearmAssembly.add(gauntletSideL);
+
+const gauntletSideR = new THREE.Mesh(new THREE.BoxGeometry(0.18, 1.48, 0.68), matCeramicWhite);
+gauntletSideR.position.set(0.44, -1.05, 0.0);
+gauntletSideR.rotation.z = 0.05;
+forearmAssembly.add(gauntletSideR);
+
+const cuffCollar = new THREE.Mesh(new THREE.CylinderGeometry(0.50, 0.50, 0.16, 28), matTitanium);
+cuffCollar.position.y = -0.34;
+forearmAssembly.add(cuffCollar);
+
+// --- 3.3 МНОГОСЛОЙНЫЕ ОБЪЁМНЫЕ ФАЛАНГИ ПАЛЬЦЕВ (15 СЕГМЕНТОВ) ---
+const BONE_PAIRS = [
+  [1, 2, 'thumb', 0],  [2, 3, 'thumb', 1],  [3, 4, 'thumb', 2],
+  [5, 6, 'index', 0],  [6, 7, 'index', 1],  [7, 8, 'index', 2],
+  [9, 10, 'middle', 0],[10, 11, 'middle', 1],[11, 12, 'middle', 2],
+  [13, 14, 'ring', 0], [14, 15, 'ring', 1], [15, 16, 'ring', 2],
+  [17, 18, 'pinky', 0],[18, 19, 'pinky', 1],[19, 20, 'pinky', 2]
+];
+
+function createVolumetricPhalanx(segIdx, isThumb) {
+  const grp = new THREE.Group();
+  const isDistal = (segIdx === 2);
+  const wScale = isThumb ? 1.14 : 1.0;
+
+  // 1) Внутреннее ядро фаланги
+  const innerTube = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.24 * wScale, 0.28 * wScale, 0.92, 20),
+    matDarkCore
+  );
+  grp.add(innerTube);
+
+  // 2) Парные стальные тяги по бокам каждой фаланги
+  [-0.22 * wScale, 0.22 * wScale].forEach(rx => {
+    const piston = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.88, 12), matTitanium);
+    piston.position.set(rx, 0, -0.04);
+    grp.add(piston);
+  });
+
+  if (!isDistal) {
+    // 3) Объёмный внешний бронекожух фаланги (скруглённый цилиндрический щиток)
+    const outerShell = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.33 * wScale, 0.36 * wScale, 0.78, 20),
+      matGunmetal
+    );
+    outerShell.scale.set(1.05, 1.0, 0.92);
+    outerShell.position.z = 0.05;
+    grp.add(outerShell);
+
+    // Верхняя гранёная накладка с пазом и винтами
+    const dorsalPlate = new THREE.Mesh(
+      new THREE.BoxGeometry(0.46 * wScale, 0.74, 0.32),
+      matGunmetal
+    );
+    dorsalPlate.position.z = 0.14;
+    grp.add(dorsalPlate);
+
+    // Утопленные винты на фаланге
+    const scTop = createScrew(0.055);
+    scTop.position.set(0, 0.20, 0.31);
+    grp.add(scTop);
+
+    const scBot = createScrew(0.055);
+    scBot.position.set(0, -0.20, 0.31);
+    grp.add(scBot);
+
+    // Нижние анатомические противоскользящие подушечки для хвата
+    const gripPad = new THREE.Mesh(
+      new THREE.BoxGeometry(0.50 * wScale, 0.66, 0.28),
+      matDarkCore
+    );
+    gripPad.position.z = -0.14;
+    grp.add(gripPad);
+  } else {
+    // 4) Кончик пальца (Дистальная фаланга с тактильной капсулой и ногтевым щитком)
+    const baseCollar = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.30 * wScale, 0.33 * wScale, 0.42, 20),
+      matGunmetal
+    );
+    baseCollar.position.y = -0.18;
+    grp.add(baseCollar);
+
+    const trimRing = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.29 * wScale, 0.30 * wScale, 0.08, 20),
+      matTitanium
+    );
+    trimRing.position.y = 0.05;
+    grp.add(trimRing);
+
+    // Объёмная скруглённая подушечка пальца
+    const fingerTip = new THREE.Mesh(
+      new THREE.SphereGeometry(0.28 * wScale, 22, 20),
+      matDarkCore
+    );
+    fingerTip.scale.set(0.96, 1.45, 0.92);
+    fingerTip.position.y = 0.22;
+    grp.add(fingerTip);
+
+    // Бронепластина ногтевой фаланги
+    const nailShield = new THREE.Mesh(
+      new THREE.SphereGeometry(0.27 * wScale, 18, 16),
+      matGunmetal
+    );
+    nailShield.scale.set(0.88, 1.32, 0.55);
+    nailShield.position.set(0, 0.20, 0.10);
+    grp.add(nailShield);
+  }
+
+  return grp;
+}
+
+const phalanxMeshes = BONE_PAIRS.map(([, , fname, segIdx]) => {
+  const mesh = createVolumetricPhalanx(segIdx, fname === 'thumb');
+  robotHand.add(mesh);
+  return mesh;
+});
+
+// --- 3.4 ШАРНИРЫ СУСТАВОВ С ПРОУШИНАМИ, ОСЯМИ И ПРИВОДАМИ (21 ТОЧКА) ---
+const KNUCKLE_IDS = new Set([1, 2, 5, 9, 13, 17]);
+const TIP_IDS = new Set([4, 8, 12, 16, 20]);
+
+const jointAssemblies = [];
+for (let i = 0; i < 21; i++) {
+  const jGrp = new THREE.Group();
+
+  if (KNUCKLE_IDS.has(i)) {
+    // Крупный шарнир костяшки (MCP): двойные серые проушины, медный барабан и титановая ось
+    const drum = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.58, 22), matBronze);
+    drum.rotation.z = Math.PI / 2;
+    jGrp.add(drum);
+
+    const clevisL = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.38, 0.14, 22), matGunmetal);
+    clevisL.rotation.z = Math.PI / 2;
+    clevisL.position.x = -0.26;
+    jGrp.add(clevisL);
+
+    const clevisR = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.38, 0.14, 22), matGunmetal);
+    clevisR.rotation.z = Math.PI / 2;
+    clevisR.position.x = 0.26;
+    jGrp.add(clevisR);
+
+    const axlePin = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.72, 16), matTitanium);
+    axlePin.rotation.z = Math.PI / 2;
+    jGrp.add(axlePin);
+  } else if (!TIP_IDS.has(i) && i !== 0) {
+    // Межфаланговый механический узел (PIP / DIP)
+    const housing = new THREE.Mesh(new THREE.SphereGeometry(0.30, 18, 18), matDarkCore);
+    jGrp.add(housing);
+
+    const earL = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.10, 18), matGunmetal);
+    earL.rotation.z = Math.PI / 2;
+    earL.position.x = -0.22;
+    jGrp.add(earL);
+
+    const earR = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.10, 18), matGunmetal);
+    earR.rotation.z = Math.PI / 2;
+    earR.position.x = 0.22;
+    jGrp.add(earR);
+
+    const pin = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.60, 16), matTitanium);
+    pin.rotation.z = Math.PI / 2;
+    jGrp.add(pin);
+  }
+
+  robotHand.add(jGrp);
+  jointAssemblies.push(jGrp);
+}
+
+// ============================================================================
+// 4. КИНЕМАТИКА И ОБНОВЛЕНИЕ ПОЛОЖЕНИЯ 3D-РУКИ В РЕАЛЬНОМ ВРЕМЕНИ
+// ============================================================================
+const smoothedPts = Array.from({ length: 21 }, () => new THREE.Vector3());
+let hasTrackedPts = false;
+
+function orientBoneSegment(mesh, pA, pB, radiusScale, palmNormal) {
+  const dir = new THREE.Vector3().subVectors(pB, pA);
+  const len = dir.length();
+  if (len < 1e-4) return;
+
+  mesh.position.copy(pA).addScaledVector(dir, 0.5);
+
+  const yAxis = dir.clone().normalize();
+  const xAxis = new THREE.Vector3().crossVectors(yAxis, palmNormal).normalize();
+  if (xAxis.lengthSq() < 1e-4) xAxis.set(1, 0, 0);
+  const zAxis = new THREE.Vector3().crossVectors(xAxis, yAxis).normalize();
+
+  const basis = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
+  mesh.quaternion.setFromRotationMatrix(basis);
+  mesh.scale.set(radiusScale, len, radiusScale);
+}
+
+function updateRobotHand(landmarks) {
+  const videoEl = document.getElementById('video');
+  const vw = videoEl.videoWidth || 1280;
+  const vh = videoEl.videoHeight || 720;
+
+  // Точное совпадение с полноэкранным видео (object-fit: cover)
+  const coverScale = Math.max(W / vw, H / vh);
+  const dispW = vw * coverScale;
+  const dispH = vh * coverScale;
+
+  for (let i = 0; i < 21; i++) {
+    const lm = landmarks[i];
+    const u = isMirrored ? (1.0 - lm.x) : lm.x;
+    const v = lm.y;
+
+    const target = new THREE.Vector3(
+      (u - 0.5) * dispW,
+      -(v - 0.5) * dispH,
+      -lm.z * dispW * 1.15
+    );
+
+    if (!hasTrackedPts) {
+      smoothedPts[i].copy(target);
+    } else {
+      smoothedPts[i].lerp(target, 0.70);
+    }
+  }
+  hasTrackedPts = true;
+
+  // Масштаб объёма деталей относительно ширины ладони
+  const palmWidth = smoothedPts[5].distanceTo(smoothedPts[17]);
+  const palmLength = smoothedPts[0].distanceTo(smoothedPts[9]);
+  const unitScale = Math.max(palmWidth * 0.42, 14.0);
+
+  // Ориентация ладони в 3D
+  const vUp = new THREE.Vector3().subVectors(smoothedPts[9], smoothedPts[0]).normalize();
+  const vAcross = new THREE.Vector3().subVectors(smoothedPts[17], smoothedPts[5]).normalize();
+  let vNormal = new THREE.Vector3().crossVectors(vAcross, vUp).normalize();
+  if (vNormal.z < 0) vNormal.negate();
+  const vRight = new THREE.Vector3().crossVectors(vUp, vNormal).normalize();
+
+  const palmBasis = new THREE.Matrix4().makeBasis(vRight, vUp, vNormal);
+  const palmQuat = new THREE.Quaternion().setFromRotationMatrix(palmBasis);
+
+  // Центр ладони
+  const palmCenter = new THREE.Vector3()
+    .add(smoothedPts[0])
+    .add(smoothedPts[5])
+    .add(smoothedPts[9])
+    .add(smoothedPts[13])
+    .add(smoothedPts[17])
+    .multiplyScalar(0.2);
+
+  palmAssembly.position.copy(palmCenter);
+  palmAssembly.quaternion.copy(palmQuat);
+  palmAssembly.scale.set(palmWidth * 1.24, palmLength * 1.02, unitScale * 1.35);
+
+  // Запястье и предплечье
+  forearmAssembly.position.copy(smoothedPts[0]);
+  forearmAssembly.quaternion.copy(palmQuat);
+  forearmAssembly.scale.setScalar(unitScale * 1.22);
+
+  // Обновление всех 15 объёмных фаланг
+  BONE_PAIRS.forEach(([a, b, fname, segIdx], idx) => {
+    const fFactor = fname === 'pinky' ? 0.86 : (fname === 'thumb' ? 1.08 : 1.0);
+    const taper = 1.0 - segIdx * 0.07;
+    orientBoneSegment(
+      phalanxMeshes[idx],
+      smoothedPts[a],
+      smoothedPts[b],
+      unitScale * fFactor * taper,
+      vNormal
+    );
+  });
+
+  // Обновление шарниров суставов с ориентацией осей вдоль сгиба каждого пальца
+  for (let i = 0; i < 21; i++) {
+    jointAssemblies[i].position.copy(smoothedPts[i]);
+    jointAssemblies[i].quaternion.copy(palmQuat);
+    jointAssemblies[i].scale.setScalar(unitScale * 0.92);
+  }
+}
+
+// ============================================================================
+// 5. ЗАПУСК КАМЕРЫ И MEDIAPIPE HANDS
+// ============================================================================
+const videoEl = document.getElementById('video');
+const startScreen = document.getElementById('startScreen');
+let facingMode = 'user';
+let isMirrored = true;
+let loopRunning = false;
+
+const hands = new Hands({
+  locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+hands.setOptions({
+  maxNumHands: 1,
+  modelComplexity: 1,
+  minDetectionConfidence: 0.6,
+  minTrackingConfidence: 0.5
+});
+
+hands.onResults(results => {
+  if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+    robotHand.visible = true;
+    updateRobotHand(results.multiHandLandmarks[0]);
+  } else {
+    robotHand.visible = false;
+    hasTrackedPts = false;
+  }
+});
+
+async function initCamera() {
+  try {
+    if (videoEl.srcObject) {
+      videoEl.srcObject.getTracks().forEach(t => t.stop());
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: facingMode },
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      },
+      audio: false
+    });
+    videoEl.srcObject = stream;
+    await videoEl.play();
+    startScreen.style.display = 'none';
+
+    if (!loopRunning) {
+      loopRunning = true;
+      requestAnimationFrame(renderLoop);
+    }
+  } catch (e) {
+    // Если автозапуск заблокирован браузером, оставляем кнопку "Включить камеру"
+    startScreen.style.display = 'flex';
+  }
+}
+
+async function renderLoop() {
+  if (videoEl.readyState >= 2) {
+    await hands.send({ image: videoEl });
+  }
+  renderer.render(scene, camera);
+  requestAnimationFrame(renderLoop);
+}
+
+document.getElementById('startBtn').addEventListener('click', initCamera);
+
+document.getElementById('camFlip').addEventListener('click', () => {
+  facingMode = facingMode === 'user' ? 'environment' : 'user';
+  isMirrored = (facingMode === 'user');
+  videoEl.style.transform = isMirrored ? 'scaleX(-1)' : 'none';
+  initCamera();
+});
+
+window.addEventListener('resize', () => {
+  W = window.innerWidth;
+  H = window.innerHeight;
+  camera.left = -W / 2;
+  camera.right = W / 2;
+  camera.top = H / 2;
+  camera.bottom = -H / 2;
+  camera.updateProjectionMatrix();
+  renderer.setSize(W, H);
+});
+
+// Пробуем сразу запустить камеру при открытии страницы
+initCamera();
+</script>
+</body>
+</html>
